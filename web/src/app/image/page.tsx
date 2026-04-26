@@ -561,71 +561,6 @@ export default function ImagePage() {
   }, []);
 
   useEffect(() => {
-    for (const conversation of conversations) {
-      for (const turn of conversation.turns ?? []) {
-        if (turn.status !== "generating" || !turn.remoteTaskId || restoredTaskIdsRef.current.has(turn.remoteTaskId)) {
-          continue;
-        }
-        restoredTaskIdsRef.current.add(turn.remoteTaskId);
-        void (async () => {
-          try {
-            const task = await fetchImageTask(turn.remoteTaskId!);
-            if (task.status === "pending" || task.status === "running") {
-              startImageTask({
-                conversationId: conversation.id,
-                turnId: turn.id,
-                mode: turn.mode,
-                count: turn.count,
-                variant: "standard",
-                startedAt: new Date(turn.createdAt).getTime() || Date.now(),
-                remoteTaskId: turn.remoteTaskId,
-              });
-              syncRuntimeTaskState(conversation.id);
-              return;
-            }
-            if (task.status === "success" && task.result) {
-              const resultItems = mergeResultImages(turn.id, task.result.data || [], turn.count);
-              const failedCount = countFailures(resultItems);
-              await updateConversation(conversation.id, (current) => ({
-                ...(current ?? conversation),
-                turns: (current?.turns ?? conversation.turns ?? []).map((item) =>
-                  item.id === turn.id
-                    ? {
-                        ...item,
-                        images: resultItems,
-                        status: failedCount > 0 ? "error" : "success",
-                        error: failedCount > 0 ? `其中 ${failedCount} 张处理失败` : undefined,
-                      }
-                    : item,
-                ),
-              }));
-              return;
-            }
-            if (task.status === "error") {
-              throw new Error(task.error || "图片任务失败");
-            }
-          } catch (error) {
-            const message = formatImageError(error);
-            await updateConversation(conversation.id, (current) => ({
-              ...(current ?? conversation),
-              turns: (current?.turns ?? conversation.turns ?? []).map((item) =>
-                item.id === turn.id
-                  ? {
-                      ...item,
-                      status: "error",
-                      error: message,
-                      images: item.images.map((image) => ({ ...image, status: "error" as const, error: message })),
-                    }
-                  : item,
-              ),
-            }));
-          }
-        })();
-      }
-    }
-  }, [conversations, syncRuntimeTaskState, updateConversation]);
-
-  useEffect(() => {
     const selectedPreset = currentResolutionPresets.find((item) => item.tier === imageResolutionTier);
     if (selectedPreset && (hasAvailablePaidAccount || selectedPreset.access === "free")) {
       return;
@@ -760,6 +695,71 @@ export default function ImagePage() {
       return next.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     });
   }, [setConversations]);
+
+  useEffect(() => {
+    for (const conversation of conversations) {
+      for (const turn of conversation.turns ?? []) {
+        if (turn.status !== "generating" || !turn.remoteTaskId || restoredTaskIdsRef.current.has(turn.remoteTaskId)) {
+          continue;
+        }
+        restoredTaskIdsRef.current.add(turn.remoteTaskId);
+        void (async () => {
+          try {
+            const task = await fetchImageTask(turn.remoteTaskId!);
+            if (task.status === "pending" || task.status === "running") {
+              startImageTask({
+                conversationId: conversation.id,
+                turnId: turn.id,
+                mode: turn.mode,
+                count: turn.count,
+                variant: "standard",
+                startedAt: new Date(turn.createdAt).getTime() || Date.now(),
+                remoteTaskId: turn.remoteTaskId,
+              });
+              syncRuntimeTaskState(conversation.id);
+              return;
+            }
+            if (task.status === "success" && task.result) {
+              const resultItems = mergeResultImages(turn.id, task.result.data || [], turn.count);
+              const failedCount = countFailures(resultItems);
+              await updateConversation(conversation.id, (current) => ({
+                ...(current ?? conversation),
+                turns: (current?.turns ?? conversation.turns ?? []).map((item) =>
+                  item.id === turn.id
+                    ? {
+                        ...item,
+                        images: resultItems,
+                        status: failedCount > 0 ? "error" : "success",
+                        error: failedCount > 0 ? `其中 ${failedCount} 张处理失败` : undefined,
+                      }
+                    : item,
+                ),
+              }));
+              return;
+            }
+            if (task.status === "error") {
+              throw new Error(task.error || "图片任务失败");
+            }
+          } catch (error) {
+            const message = formatImageError(error);
+            await updateConversation(conversation.id, (current) => ({
+              ...(current ?? conversation),
+              turns: (current?.turns ?? conversation.turns ?? []).map((item) =>
+                item.id === turn.id
+                  ? {
+                      ...item,
+                      status: "error",
+                      error: message,
+                      images: item.images.map((image) => ({ ...image, status: "error" as const, error: message })),
+                    }
+                  : item,
+              ),
+            }));
+          }
+        })();
+      }
+    }
+  }, [conversations, syncRuntimeTaskState, updateConversation]);
 
   const resetComposer = useCallback((nextMode: ImageMode = mode) => {
     setMode(nextMode);

@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"time"
 
@@ -163,7 +164,7 @@ func (c *cpaImageClient) EditImageByUpload(ctx context.Context, prompt, model st
 	}
 
 	for index, image := range images {
-		part, err := writer.CreateFormFile("image", fmt.Sprintf("image-%d.png", index+1))
+		part, err := createCPAImageFormFile(writer, "image", fmt.Sprintf("image-%d", index+1), image)
 		if err != nil {
 			return nil, fmt.Errorf("create image form field: %w", err)
 		}
@@ -172,7 +173,7 @@ func (c *cpaImageClient) EditImageByUpload(ctx context.Context, prompt, model st
 		}
 	}
 	if len(mask) > 0 {
-		part, err := writer.CreateFormFile("mask", "mask.png")
+		part, err := createCPAImageFormFile(writer, "mask", "mask", mask)
 		if err != nil {
 			return nil, fmt.Errorf("create mask form field: %w", err)
 		}
@@ -324,6 +325,21 @@ func summarizeCPAError(body []byte) string {
 		return "empty error response"
 	}
 	return trimmed
+}
+
+func createCPAImageFormFile(writer *multipart.Writer, fieldName, baseName string, data []byte) (io.Writer, error) {
+	mimeType := detectCPAImageMIME(data)
+	ext := "png"
+	switch strings.ToLower(mimeType) {
+	case "image/jpeg":
+		ext = "jpg"
+	case "image/webp":
+		ext = "webp"
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s.%s"`, fieldName, baseName, ext))
+	header.Set("Content-Type", mimeType)
+	return writer.CreatePart(header)
 }
 
 func detectCPAImageMIME(data []byte) string {

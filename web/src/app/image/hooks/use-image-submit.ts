@@ -4,9 +4,13 @@ import { useCallback } from "react";
 import { toast } from "sonner";
 
 import {
+  createImageEditTask,
+  createImageGenerationTask,
+  createImageUpscaleTask,
   editImage,
   generateImageWithOptions,
   upscaleImage,
+  waitForImageTask,
   type ImageModel,
   type ImageQuality,
 } from "@/lib/api";
@@ -92,6 +96,33 @@ function buildConversationBase(conversationId: string, draftTurn: ImageConversat
     error: draftTurn.error,
     turns: [draftTurn],
   };
+}
+
+async function completeRemoteTask(
+  taskId: string,
+  conversationId: string,
+  turnId: string,
+  expectedCount: number,
+  updateConversation: UseImageSubmitOptions["updateConversation"],
+  draftTurn: ImageConversationTurn,
+) {
+  const data = await waitForImageTask(taskId);
+  const resultItems = mergeResultImages(turnId, data.data || [], expectedCount);
+  const failedCount = countFailures(resultItems);
+  await updateConversation(conversationId, (current) => ({
+    ...(current ?? buildConversationBase(conversationId, draftTurn)),
+    turns: (current?.turns ?? [draftTurn]).map((item) =>
+      item.id === turnId
+        ? {
+            ...item,
+            images: resultItems,
+            status: failedCount > 0 ? "error" : "success",
+            error: failedCount > 0 ? `其中 ${failedCount} 张处理失败` : undefined,
+          }
+        : item,
+    ),
+  }));
+  return failedCount;
 }
 
 export function useImageSubmit({
@@ -513,22 +544,20 @@ export function useImageSubmit({
         await persistConversation(buildConversationBase(conversationId, draftTurn));
       }
 
-      let resultItems: StoredImage[] = [];
+      let taskId = "";
       if (mode === "generate") {
         if (imageSources.length > 0) {
           const files = await Promise.all(
             imageSources.map((item, index) => dataUrlToFile(item.dataUrl, item.name || `reference-${index + 1}.png`)),
           );
-          const data = await editImage({ prompt, images: files, model: imageModel });
-          resultItems = mergeResultImages(turnId, data.data || [], 1);
+          taskId = (await createImageEditTask({ prompt, images: files, model: imageModel })).task_id;
         } else {
-          const data = await generateImageWithOptions(prompt, {
+          taskId = (await createImageGenerationTask(prompt, {
             model: imageModel,
             count: parsedCount,
             size: imageSize,
             quality: imageQuality,
-          });
-          resultItems = mergeResultImages(turnId, data.data || [], parsedCount);
+          })).task_id;
         }
       }
 
@@ -537,30 +566,36 @@ export function useImageSubmit({
           imageSources.map((item, index) => dataUrlToFile(item.dataUrl, item.name || `image-${index + 1}.png`)),
         );
         const mask = maskSource ? await dataUrlToFile(maskSource.dataUrl, maskSource.name || "mask.png") : null;
-        const data = await editImage({ prompt, images: files, mask, model: imageModel });
-        resultItems = mergeResultImages(turnId, data.data || [], 1);
+        taskId = (await createImageEditTask({ prompt, images: files, mask, model: imageModel })).task_id;
       }
 
       if (mode === "upscale") {
         const file = await dataUrlToFile(imageSources[0].dataUrl, imageSources[0].name || "upscale.png");
-        const data = await upscaleImage({ image: file, prompt, scale: upscaleScale, model: imageModel });
-        resultItems = mergeResultImages(turnId, data.data || [], 1);
+        taskId = (await createImageUpscaleTask({ image: file, prompt, scale: upscaleScale, model: imageModel })).task_id;
       }
 
-      const failedCount = countFailures(resultItems);
+      if (!taskId) {
+        throw new Error("图片任务创建失败");
+      }
+      startImageTask({
+        conversationId,
+        turnId,
+        mode,
+        count: expectedCount,
+        variant: "standard",
+        startedAt,
+        remoteTaskId: taskId,
+      });
       await updateConversation(conversationId, (current) => ({
         ...(current ?? buildConversationBase(conversationId, draftTurn)),
         turns: (current?.turns ?? [draftTurn]).map((turn) =>
-          turn.id === turnId
-            ? {
-                ...turn,
-                images: resultItems,
-                status: failedCount > 0 ? "error" : "success",
-                error: failedCount > 0 ? `其中 ${failedCount} 张处理失败` : undefined,
-              }
-            : turn,
+          turn.id === turnId ? { ...turn, remoteTaskId: taskId } : turn,
         ),
       }));
+      const failedCount = await completeRemoteTask(taskId, conversationId, turnId, expectedCount, updateConversation, {
+        ...draftTurn,
+        remoteTaskId: taskId,
+      });
 
       resetComposer(mode === "generate" ? "generate" : mode);
       if (failedCount > 0) {

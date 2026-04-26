@@ -9,6 +9,7 @@ export type ActiveImageTask = {
   count: number;
   variant: "standard" | "selection-edit";
   startedAt: number;
+  remoteTaskId?: string;
 };
 
 type Listener = () => void;

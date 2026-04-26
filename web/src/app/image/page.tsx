@@ -5,7 +5,7 @@ import "react-medium-image-zoom/dist/styles.css";
 import { ChevronsDown } from "lucide-react";
 
 import { ImageEditModal } from "@/components/image-edit-modal";
-import { fetchAccounts, fetchConfig, type Account, type ImageQuality } from "@/lib/api";
+import { fetchAccounts, fetchConfig, fetchImageTask, type Account, type ImageQuality } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   normalizeConversation,
@@ -24,6 +24,7 @@ import { useImageHistory } from "./hooks/use-image-history";
 import { useImageSourceInputs } from "./hooks/use-image-source-inputs";
 import { useImageSubmit } from "./hooks/use-image-submit";
 import { buildConversationPreviewSource } from "./view-utils";
+import { countFailures, formatImageError, mergeResultImages } from "./submit-utils";
 
 type ImageAspectRatio = "1:1" | "4:3" | "3:2" | "16:9" | "21:9" | "9:16";
 type ImageResolutionTier = "sd" | "2k" | "4k";
@@ -337,6 +338,7 @@ export default function ImagePage() {
   const previousSelectedConversationIdRef = useRef<string | null>(null);
   const previousTurnCountRef = useRef(0);
   const previousLastTurnKeyRef = useRef("");
+  const restoredTaskIdsRef = useRef(new Set<string>());
 
   const [mode, setMode] = useState<ImageMode>("generate");
   const [imagePrompt, setImagePrompt] = useState("");
@@ -557,6 +559,71 @@ export default function ImagePage() {
     didLoadQuotaRef.current = true;
     void loadQuota();
   }, []);
+
+  useEffect(() => {
+    for (const conversation of conversations) {
+      for (const turn of conversation.turns ?? []) {
+        if (turn.status !== "generating" || !turn.remoteTaskId || restoredTaskIdsRef.current.has(turn.remoteTaskId)) {
+          continue;
+        }
+        restoredTaskIdsRef.current.add(turn.remoteTaskId);
+        void (async () => {
+          try {
+            const task = await fetchImageTask(turn.remoteTaskId!);
+            if (task.status === "pending" || task.status === "running") {
+              startImageTask({
+                conversationId: conversation.id,
+                turnId: turn.id,
+                mode: turn.mode,
+                count: turn.count,
+                variant: "standard",
+                startedAt: new Date(turn.createdAt).getTime() || Date.now(),
+                remoteTaskId: turn.remoteTaskId,
+              });
+              syncRuntimeTaskState(conversation.id);
+              return;
+            }
+            if (task.status === "success" && task.result) {
+              const resultItems = mergeResultImages(turn.id, task.result.data || [], turn.count);
+              const failedCount = countFailures(resultItems);
+              await updateConversation(conversation.id, (current) => ({
+                ...(current ?? conversation),
+                turns: (current?.turns ?? conversation.turns ?? []).map((item) =>
+                  item.id === turn.id
+                    ? {
+                        ...item,
+                        images: resultItems,
+                        status: failedCount > 0 ? "error" : "success",
+                        error: failedCount > 0 ? `其中 ${failedCount} 张处理失败` : undefined,
+                      }
+                    : item,
+                ),
+              }));
+              return;
+            }
+            if (task.status === "error") {
+              throw new Error(task.error || "图片任务失败");
+            }
+          } catch (error) {
+            const message = formatImageError(error);
+            await updateConversation(conversation.id, (current) => ({
+              ...(current ?? conversation),
+              turns: (current?.turns ?? conversation.turns ?? []).map((item) =>
+                item.id === turn.id
+                  ? {
+                      ...item,
+                      status: "error",
+                      error: message,
+                      images: item.images.map((image) => ({ ...image, status: "error" as const, error: message })),
+                    }
+                  : item,
+              ),
+            }));
+          }
+        })();
+      }
+    }
+  }, [conversations, syncRuntimeTaskState, updateConversation]);
 
   useEffect(() => {
     const selectedPreset = currentResolutionPresets.find((item) => item.tier === imageResolutionTier);

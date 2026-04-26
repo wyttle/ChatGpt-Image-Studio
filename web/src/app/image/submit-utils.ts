@@ -37,6 +37,7 @@ export function createConversationTurn(payload: {
   size?: string;
   quality?: ImageQuality;
   scale?: string;
+  remoteTaskId?: string;
   sourceImages?: StoredSourceImage[];
   images: StoredImage[];
   createdAt: string;
@@ -53,6 +54,7 @@ export function createConversationTurn(payload: {
     size: payload.size,
     quality: payload.quality,
     scale: payload.scale,
+    remoteTaskId: payload.remoteTaskId,
     sourceImages: payload.sourceImages ?? [],
     images: payload.images,
     createdAt: payload.createdAt,

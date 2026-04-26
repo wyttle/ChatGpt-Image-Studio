@@ -38,6 +38,7 @@ export type ImageConversationTurn = {
   size?: string;
   quality?: ImageQuality;
   scale?: string;
+  remoteTaskId?: string;
   sourceImages?: StoredSourceImage[];
   images: StoredImage[];
   createdAt: string;

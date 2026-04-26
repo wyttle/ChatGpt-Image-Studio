@@ -135,17 +135,17 @@ export type AccountQuotaResponse = {
 
 export type ImageMode = "studio" | "cpa";
 
-type ImageResponse = {
+export type ImageResponse = {
   created: number;
   data: ImageResponseItem[];
 };
 
-type ImageTaskCreateResponse = {
+export type ImageTaskCreateResponse = {
   task_id: string;
   status: string;
 };
 
-type ImageTaskResponse = {
+export type ImageTaskResponse = {
   id: string;
   status: "pending" | "running" | "success" | "error";
   created_at: number;
@@ -358,7 +358,11 @@ export async function runSync(direction: "pull" | "push") {
   });
 }
 
-async function waitForImageTask(taskId: string) {
+export async function fetchImageTask(taskId: string) {
+  return httpRequest<ImageTaskResponse>(`/api/image-tasks/${taskId}`);
+}
+
+export async function waitForImageTask(taskId: string) {
   const startedAt = Date.now();
   const maxWaitMs = 30 * 60 * 1000;
   while (Date.now() - startedAt < maxWaitMs) {
@@ -383,6 +387,30 @@ async function submitImageTask(path: string, body: unknown) {
   return waitForImageTask(task.task_id);
 }
 
+export async function createImageGenerationTask(
+  prompt: string,
+  options: {
+    model?: ImageModel;
+    count?: number;
+    size?: string;
+    quality?: ImageQuality;
+  } = {},
+) {
+  const { model = "gpt-image-2", count = 1, size, quality = "high" } = options;
+  return httpRequest<ImageTaskCreateResponse>("/v1/images/generations", {
+    method: "POST",
+    body: {
+      prompt,
+      model,
+      n: Math.max(1, count),
+      size: size?.trim() || undefined,
+      quality,
+      response_format: "b64_json",
+    },
+    headers: { "X-Image-Task": "async" },
+  });
+}
+
 export async function generateImage(prompt: string, model: ImageModel = "gpt-image-2", count = 1) {
   return generateImageWithOptions(prompt, { model, count });
 }
@@ -404,6 +432,45 @@ export async function generateImageWithOptions(
     size: size?.trim() || undefined,
     quality,
     response_format: "b64_json",
+  });
+}
+
+export async function createImageEditTask({
+  prompt,
+  images,
+  mask,
+  sourceReference,
+  model = "gpt-image-2",
+}: {
+  prompt: string;
+  images: File[];
+  mask?: File | null;
+  sourceReference?: InpaintSourceReference;
+  model?: ImageModel;
+}) {
+  const formData = new FormData();
+  formData.append("prompt", prompt);
+  formData.append("model", model);
+  formData.append("response_format", "b64_json");
+  images.forEach((file) => formData.append("image", file));
+  if (mask) {
+    formData.append("mask", mask);
+  }
+  if (sourceReference) {
+    formData.append("original_file_id", sourceReference.original_file_id);
+    formData.append("original_gen_id", sourceReference.original_gen_id);
+    formData.append("source_account_id", sourceReference.source_account_id);
+    if (sourceReference.conversation_id) {
+      formData.append("conversation_id", sourceReference.conversation_id);
+    }
+    if (sourceReference.parent_message_id) {
+      formData.append("parent_message_id", sourceReference.parent_message_id);
+    }
+  }
+  return httpRequest<ImageTaskCreateResponse>("/v1/images/edits", {
+    method: "POST",
+    body: formData,
+    headers: { "X-Image-Task": "async" },
   });
 }
 
@@ -440,6 +507,32 @@ export async function editImage({
     }
   }
   return submitImageTask("/v1/images/edits", formData);
+}
+
+export async function createImageUpscaleTask({
+  image,
+  prompt,
+  scale,
+  model = "gpt-image-2",
+}: {
+  image: File;
+  prompt?: string;
+  scale?: string;
+  model?: ImageModel;
+}) {
+  const formData = new FormData();
+  formData.append("image", image);
+  formData.append("model", model);
+  formData.append("response_format", "b64_json");
+  formData.append("scale", scale || "2x");
+  if (prompt?.trim()) {
+    formData.append("prompt", prompt.trim());
+  }
+  return httpRequest<ImageTaskCreateResponse>("/v1/images/upscale", {
+    method: "POST",
+    body: formData,
+    headers: { "X-Image-Task": "async" },
+  });
 }
 
 export async function upscaleImage({

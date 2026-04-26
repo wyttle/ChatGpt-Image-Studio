@@ -5,7 +5,7 @@ import "react-medium-image-zoom/dist/styles.css";
 import { ChevronsDown } from "lucide-react";
 
 import { ImageEditModal } from "@/components/image-edit-modal";
-import { fetchAccounts, fetchConfig, fetchImageTask, type Account, type ImageQuality } from "@/lib/api";
+import { fetchAccounts, fetchConfig, fetchImageTask, waitForImageTask, type Account, type ImageQuality } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   normalizeConversation,
@@ -14,7 +14,7 @@ import {
   type ImageConversation,
   type ImageMode,
 } from "@/store/image-conversations";
-import { isImageTaskActive, listActiveImageTasks, subscribeImageTasks } from "@/store/image-active-tasks";
+import { finishImageTask, isImageTaskActive, listActiveImageTasks, startImageTask, subscribeImageTasks } from "@/store/image-active-tasks";
 import { ConversationTurns } from "./components/conversation-turns";
 import { EmptyState } from "./components/empty-state";
 import { HistorySidebar } from "./components/history-sidebar";
@@ -717,6 +717,24 @@ export default function ImagePage() {
                 remoteTaskId: turn.remoteTaskId,
               });
               syncRuntimeTaskState(conversation.id);
+              const result = await waitForImageTask(turn.remoteTaskId!);
+              const resultItems = mergeResultImages(turn.id, result.data || [], turn.count);
+              const failedCount = countFailures(resultItems);
+              await updateConversation(conversation.id, (current) => ({
+                ...(current ?? conversation),
+                turns: (current?.turns ?? conversation.turns ?? []).map((item) =>
+                  item.id === turn.id
+                    ? {
+                        ...item,
+                        images: resultItems,
+                        status: failedCount > 0 ? "error" : "success",
+                        error: failedCount > 0 ? `其中 ${failedCount} 张处理失败` : undefined,
+                      }
+                    : item,
+                ),
+              }));
+              finishImageTask(conversation.id, turn.id);
+              syncRuntimeTaskState(conversation.id);
               return;
             }
             if (task.status === "success" && task.result) {
@@ -741,6 +759,8 @@ export default function ImagePage() {
               throw new Error(task.error || "图片任务失败");
             }
           } catch (error) {
+            finishImageTask(conversation.id, turn.id);
+            syncRuntimeTaskState(conversation.id);
             const message = formatImageError(error);
             await updateConversation(conversation.id, (current) => ({
               ...(current ?? conversation),

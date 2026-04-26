@@ -330,7 +330,11 @@ func detectCPAImageMIME(data []byte) string {
 	if len(data) == 0 {
 		return "image/png"
 	}
-	return http.DetectContentType(data)
+	mimeType := strings.TrimSpace(http.DetectContentType(data))
+	if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		return "image/png"
+	}
+	return mimeType
 }
 
 func encodeCPAImageDataURLFromBase64(encoded, mimeType string) string {

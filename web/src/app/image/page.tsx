@@ -198,7 +198,7 @@ async function normalizeConversationHistory(items: ImageConversation[]) {
   const normalized = items.map((item) => {
     let changed = false;
     const turns = (item.turns ?? []).map((turn) => {
-      if (turn.status !== "generating" || isImageTaskActive(item.id, turn.id)) {
+      if (turn.status !== "generating" || turn.remoteTaskId || isImageTaskActive(item.id, turn.id)) {
         return turn;
       }
 

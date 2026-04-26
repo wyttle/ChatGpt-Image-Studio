@@ -950,8 +950,8 @@ func (s *Server) handleImageUpscale(w http.ResponseWriter, r *http.Request) {
 	requestedModel := normalizeRequestedImageModel(r.FormValue("model"), s.cfg.ChatGPT.Model)
 	responseFormat := firstNonEmpty(r.FormValue("response_format"), s.cfg.App.ImageFormat, "url")
 	execute := func(ctx context.Context, taskReq *http.Request) (map[string]any, error) {
-		data, err := s.withImageResultsWithMetadata(ctx, "upscale", responseFormat, "", requestedModel, handler.SupportsResponsesInlineEdit([][]byte{images[0]}, nil), newImageRequestMetadata(prompt, "", ""), func(client imageWorkflowClient, upstreamModel string) ([]handler.ImageResult, error) {
-			return client.EditImageByUpload(ctx, prompt, upstreamModel, [][]byte{images[0]}, nil)
+		data, err := s.withImageResultsWithMetadata(ctx, "upscale", responseFormat, "", requestedModel, handler.SupportsResponsesInlineEdit([][]byte{images[0]}, nil), newImageRequestMetadata(prompt, scale, ""), func(client imageWorkflowClient, upstreamModel string) ([]handler.ImageResult, error) {
+			return client.EditImageByUpload(ctx, prompt, upstreamModel, [][]byte{images[0]}, nil, scale, "")
 		}, taskReq)
 		if err != nil {
 			return nil, err

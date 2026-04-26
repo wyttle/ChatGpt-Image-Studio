@@ -350,6 +350,7 @@ export default function ImagePage() {
   const [availableQuota, setAvailableQuota] = useState("加载中");
   const [availableAccounts, setAvailableAccounts] = useState<Account[]>([]);
   const [allowDisabledStudioAccounts, setAllowDisabledStudioAccounts] = useState(false);
+  const [isCPAImageMode, setIsCPAImageMode] = useState(false);
   const [activeRequest, setActiveRequest] = useState<ActiveRequestState | null>(null);
   const [submitStartedAt, setSubmitStartedAt] = useState<number | null>(null);
   const [submitElapsedSeconds, setSubmitElapsedSeconds] = useState(0);
@@ -439,8 +440,8 @@ export default function ImagePage() {
   }, [selectedConversationLastTurn]);
   const parsedCount = useMemo(() => Math.max(1, Math.min(8, Number(imageCount) || 1)), [imageCount]);
   const hasAvailablePaidAccount = useMemo(
-    () => hasAvailablePaidImageAccount(availableAccounts, allowDisabledStudioAccounts),
-    [allowDisabledStudioAccounts, availableAccounts],
+    () => isCPAImageMode || hasAvailablePaidImageAccount(availableAccounts, allowDisabledStudioAccounts),
+    [allowDisabledStudioAccounts, availableAccounts, isCPAImageMode],
   );
   const currentResolutionPresets = useMemo(() => imageResolutionPresets[imageAspectRatio], [imageAspectRatio]);
   const imageResolutionTierOptions = useMemo(
@@ -538,11 +539,13 @@ export default function ImagePage() {
         const [accountsData, configData] = await Promise.all([fetchAccounts(), fetchConfig()]);
         const allowDisabled =
           configData.chatgpt.imageMode === "studio" && configData.chatgpt.studioAllowDisabledImageAccounts;
+        setIsCPAImageMode(configData.chatgpt.imageMode === "cpa");
         setAllowDisabledStudioAccounts(allowDisabled);
         setAvailableAccounts(accountsData.items);
         setAvailableQuota(formatAvailableQuota(accountsData.items, allowDisabled));
       } catch {
         setAvailableAccounts([]);
+        setIsCPAImageMode(false);
         setAllowDisabledStudioAccounts(false);
         setAvailableQuota((prev) => (prev === "加载中" ? "—" : prev));
       }

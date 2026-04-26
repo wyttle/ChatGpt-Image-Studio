@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +32,7 @@ type Server struct {
 	syncClient             *cliproxy.Client
 	staticDir              string
 	reqLogs                *imageRequestLogStore
+	imageTasks             *imageTaskStore
 	officialClientFactory  func(accessToken, proxyURL string, authData map[string]any, requestConfig handler.ImageRequestConfig) imageWorkflowClient
 	responsesClientFactory func(accessToken, proxyURL string, authData map[string]any, requestConfig handler.ImageRequestConfig) imageWorkflowClient
 	cpaClientFactory       func(baseURL, apiKey string, timeout time.Duration, routeStrategy string) cpaRouteAwareImageWorkflowClient
@@ -51,8 +54,9 @@ func NewServer(cfg *config.Config, store *accounts.Store, syncClient *cliproxy.C
 		cfg:        cfg,
 		store:      store,
 		syncClient: syncClient,
-		staticDir:  cfg.ResolvePath(cfg.Server.StaticDir),
-		reqLogs:    newImageRequestLogStore(),
+		staticDir:   cfg.ResolvePath(cfg.Server.StaticDir),
+		reqLogs:     newImageRequestLogStore(),
+		imageTasks:  newImageTaskStore(),
 		officialClientFactory: func(accessToken, proxyURL string, authData map[string]any, requestConfig handler.ImageRequestConfig) imageWorkflowClient {
 			return handler.NewChatGPTClientWithProxyAndConfig(
 				accessToken,
@@ -90,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/requests", s.requireUIAuth(http.HandlerFunc(s.handleListRequestLogs)))
 	mux.Handle("GET /api/sync/status", s.requireUIAuth(http.HandlerFunc(s.handleSyncStatus)))
 	mux.Handle("POST /api/sync/run", s.requireUIAuth(http.HandlerFunc(s.handleRunSync)))
+	mux.Handle("GET /api/image-tasks/{id}", s.requireImageAuth(http.HandlerFunc(s.handleGetImageTask)))
 
 	mux.Handle("POST /v1/images/generations", s.requireImageAuth(http.HandlerFunc(s.handleImageGenerations)))
 	mux.Handle("POST /v1/images/edits", s.requireImageAuth(http.HandlerFunc(s.handleImageEdits)))
@@ -417,7 +422,7 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		req.N = 1
 	}
 
-	payload, err := s.executeImageGeneration(r.Context(), imageGenerationRequest{
+	imageReq := imageGenerationRequest{
 		Model:          req.Model,
 		Prompt:         req.Prompt,
 		N:              req.N,
@@ -425,7 +430,15 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		Quality:        req.Quality,
 		Background:     req.Background,
 		ResponseFormat: req.ResponseFormat,
-	}, r)
+	}
+	if wantsAsyncImageTask(r) {
+		s.startImageTask(w, r, func(ctx context.Context, taskReq *http.Request) (map[string]any, error) {
+			return s.executeImageGeneration(ctx, imageReq, taskReq)
+		})
+		return
+	}
+
+	payload, err := s.executeImageGeneration(r.Context(), imageReq, r)
 	if err != nil {
 		writeImageRequestError(w, err)
 		return
@@ -453,53 +466,65 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	}
 
 	inpaintRequest := parseInpaintRequest(r)
-	var data []map[string]any
-	if inpaintRequest.originalFileID != "" && inpaintRequest.originalGenID != "" {
-		if len(mask) == 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "mask is required for selection edit"})
-			return
-		}
-		data, err = s.withImageResultsWithMetadata(r.Context(), "selection-edit", responseFormat, inpaintRequest.sourceAccountID, requestedModel, false, newImageRequestMetadata(prompt, "", ""), func(client imageWorkflowClient, upstreamModel string) ([]handler.ImageResult, error) {
-			return client.InpaintImageByMask(
-				r.Context(),
-				prompt,
-				upstreamModel,
-				inpaintRequest.originalFileID,
-				inpaintRequest.originalGenID,
-				inpaintRequest.conversationID,
-				inpaintRequest.parentMessageID,
-				mask,
-			)
-		}, r)
-	} else {
-		images, readErr := readImagesFromMultipart(r.MultipartForm)
-		if readErr != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": readErr.Error()})
-			return
-		}
+	images, readErr := readImagesFromMultipart(r.MultipartForm)
+	if readErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": readErr.Error()})
+		return
+	}
+	if inpaintRequest.originalFileID == "" || inpaintRequest.originalGenID == "" {
 		if len(images) == 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "at least one image is required"})
 			return
 		}
+	} else if len(mask) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "mask is required for selection edit"})
+		return
+	}
 
-		payload, execErr := s.executeImageEdit(r.Context(), imageEditRequest{
-			Model:          requestedModel,
-			Prompt:         prompt,
-			Images:         images,
-			Mask:           mask,
-			ResponseFormat: responseFormat,
-		}, r)
-		if execErr != nil {
-			err = execErr
+	execute := func(ctx context.Context, taskReq *http.Request) (map[string]any, error) {
+		var data []map[string]any
+		if inpaintRequest.originalFileID != "" && inpaintRequest.originalGenID != "" {
+			result, err := s.withImageResultsWithMetadata(ctx, "selection-edit", responseFormat, inpaintRequest.sourceAccountID, requestedModel, false, newImageRequestMetadata(prompt, "", ""), func(client imageWorkflowClient, upstreamModel string) ([]handler.ImageResult, error) {
+				return client.InpaintImageByMask(
+					ctx,
+					prompt,
+					upstreamModel,
+					inpaintRequest.originalFileID,
+					inpaintRequest.originalGenID,
+					inpaintRequest.conversationID,
+					inpaintRequest.parentMessageID,
+					mask,
+				)
+			}, taskReq)
+			if err != nil {
+				return nil, err
+			}
+			data = result
 		} else {
+			payload, err := s.executeImageEdit(ctx, imageEditRequest{
+				Model:          requestedModel,
+				Prompt:         prompt,
+				Images:         images,
+				Mask:           mask,
+				ResponseFormat: responseFormat,
+			}, taskReq)
+			if err != nil {
+				return nil, err
+			}
 			data = compatResponseDataItems(payload)
 		}
+		return map[string]any{"created": time.Now().Unix(), "data": data}, nil
 	}
+	if wantsAsyncImageTask(r) {
+		s.startImageTask(w, r, execute)
+		return
+	}
+	payload, err := execute(r.Context(), r)
 	if err != nil {
 		writeImageRequestError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": data})
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) handleImageUpscale(w http.ResponseWriter, r *http.Request) {
@@ -526,15 +551,25 @@ func (s *Server) handleImageUpscale(w http.ResponseWriter, r *http.Request) {
 	}
 	requestedModel := normalizeRequestedImageModel(r.FormValue("model"), s.cfg.ChatGPT.Model)
 	responseFormat := firstNonEmpty(r.FormValue("response_format"), s.cfg.App.ImageFormat, "url")
-
-	data, err := s.withImageResultsWithMetadata(r.Context(), "upscale", responseFormat, "", requestedModel, handler.SupportsResponsesInlineEdit([][]byte{images[0]}, nil), newImageRequestMetadata(prompt, "", ""), func(client imageWorkflowClient, upstreamModel string) ([]handler.ImageResult, error) {
-		return client.EditImageByUpload(r.Context(), prompt, upstreamModel, [][]byte{images[0]}, nil)
-	}, r)
+	execute := func(ctx context.Context, taskReq *http.Request) (map[string]any, error) {
+		data, err := s.withImageResultsWithMetadata(ctx, "upscale", responseFormat, "", requestedModel, handler.SupportsResponsesInlineEdit([][]byte{images[0]}, nil), newImageRequestMetadata(prompt, "", ""), func(client imageWorkflowClient, upstreamModel string) ([]handler.ImageResult, error) {
+			return client.EditImageByUpload(ctx, prompt, upstreamModel, [][]byte{images[0]}, nil)
+		}, taskReq)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"created": time.Now().Unix(), "data": data}, nil
+	}
+	if wantsAsyncImageTask(r) {
+		s.startImageTask(w, r, execute)
+		return
+	}
+	payload, err := execute(r.Context(), r)
 	if err != nil {
 		writeImageRequestError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": data})
+	writeJSON(w, http.StatusOK, payload)
 }
 
 type imageRequestMetadata struct {

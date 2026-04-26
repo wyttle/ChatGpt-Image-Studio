@@ -424,22 +424,20 @@ export function useImageSubmit({
         turns: current?.turns?.map((item) => (item.id === turnId ? draftTurn : item)) ?? [draftTurn],
       }));
 
-      let resultItems: StoredImage[] = [];
+      let taskId = "";
       if (turnMode === "generate") {
         if (turnImageSources.length > 0) {
           const files = await Promise.all(
             turnImageSources.map((item, index) => dataUrlToFile(buildSourceImageUrl(item), item.name || `reference-${index + 1}.png`)),
           );
-          const data = await editImage({ prompt, images: files, size: turn.size, quality: turnQuality, model: turn.model });
-          resultItems = mergeResultImages(turnId, data.data || [], 1);
+          taskId = (await createImageEditTask({ prompt, images: files, size: turn.size, quality: turnQuality, model: turn.model })).task_id;
         } else {
-          const data = await generateImageWithOptions(prompt, {
+          taskId = (await createImageGenerationTask(prompt, {
             model: turn.model,
             count: expectedCount,
             size: turn.size,
             quality: turnQuality,
-          });
-          resultItems = mergeResultImages(turnId, data.data || [], expectedCount);
+          })).task_id;
         }
       }
 
@@ -449,24 +447,31 @@ export function useImageSubmit({
         );
         const maskURL = turnMaskSource ? buildSourceImageUrl(turnMaskSource) : "";
         const mask = maskURL ? await dataUrlToFile(maskURL, turnMaskSource?.name || "mask.png") : null;
-        const data = await editImage({ prompt, images: files, mask, size: turn.size, quality: turnQuality, model: turn.model });
-        resultItems = mergeResultImages(turnId, data.data || [], 1);
+        taskId = (await createImageEditTask({ prompt, images: files, mask, size: turn.size, quality: turnQuality, model: turn.model })).task_id;
       }
 
-      const failedCount = countFailures(resultItems);
+      if (!taskId) {
+        throw new Error("图片任务创建失败");
+      }
+      startImageTask({
+        conversationId,
+        turnId,
+        mode: turnMode,
+        count: expectedCount,
+        variant: "standard",
+        startedAt,
+        remoteTaskId: taskId,
+      });
       await updateConversation(conversationId, (current) => ({
         ...(current ?? buildConversationBase(conversationId, draftTurn)),
         turns: (current?.turns ?? [draftTurn]).map((item) =>
-          item.id === turnId
-            ? {
-                ...item,
-                images: resultItems,
-                status: failedCount > 0 ? "error" : "success",
-                error: failedCount > 0 ? `其中 ${failedCount} 张处理失败` : undefined,
-              }
-            : item,
+          item.id === turnId ? { ...item, remoteTaskId: taskId } : item,
         ),
       }));
+      const failedCount = await completeRemoteTask(taskId, conversationId, turnId, expectedCount, updateConversation, {
+        ...draftTurn,
+        remoteTaskId: taskId,
+      });
 
       if (failedCount > 0) {
         toast.error(`已返回结果，但有 ${failedCount} 张处理失败`);

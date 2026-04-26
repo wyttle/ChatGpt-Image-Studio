@@ -339,7 +339,7 @@ func detectCPAImageMIME(data []byte) string {
 
 func encodeCPAImageDataURLFromBase64(encoded, mimeType string) string {
 	trimmedMimeType := strings.TrimSpace(mimeType)
-	if trimmedMimeType == "" {
+	if trimmedMimeType == "" || !strings.HasPrefix(strings.ToLower(trimmedMimeType), "image/") {
 		trimmedMimeType = "image/png"
 	}
 	return "data:" + trimmedMimeType + ";base64," + strings.TrimSpace(encoded)

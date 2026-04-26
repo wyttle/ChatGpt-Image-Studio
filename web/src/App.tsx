@@ -1,4 +1,4 @@
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 
 import AccountsPage from "@/app/accounts/page";
 import ImagePage from "@/app/image/page";
@@ -14,7 +14,9 @@ export default function App() {
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/image" element={<ImagePage />} />
+        <Route path="/image" element={<Navigate to="/image/history" replace />} />
+        <Route path="/image/history" element={<ImagePage />} />
+        <Route path="/image/workspace" element={<ImagePage />} />
         <Route path="/accounts" element={<AccountsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/requests" element={<RequestsPage />} />

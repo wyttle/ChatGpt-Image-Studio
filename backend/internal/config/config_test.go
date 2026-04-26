@@ -193,3 +193,75 @@ func TestNormalizeCPAImageRouteStrategyPreservesKnownValues(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateDefaultsImageConversationAndDataStorageToBrowser(t *testing.T) {
+	cfg := &Config{
+		Storage: StorageConfig{
+			Backend:       "current",
+			ConfigBackend: "file",
+		},
+		ChatGPT: ChatGPTConfig{
+			ImageMode:      "studio",
+			FreeImageRoute: "legacy",
+			PaidImageRoute: "responses",
+		},
+	}
+
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate() returned error: %v", err)
+	}
+	if cfg.Storage.ImageConversationStorage != "browser" {
+		t.Fatalf("ImageConversationStorage = %q, want browser", cfg.Storage.ImageConversationStorage)
+	}
+	if cfg.Storage.ImageDataStorage != "browser" {
+		t.Fatalf("ImageDataStorage = %q, want browser", cfg.Storage.ImageDataStorage)
+	}
+}
+
+func TestValidateMigratesLegacyImageStorageToNewFields(t *testing.T) {
+	cfg := &Config{
+		Storage: StorageConfig{
+			Backend:       "sqlite",
+			ConfigBackend: "redis",
+			ImageStorage:  "server",
+		},
+		ChatGPT: ChatGPTConfig{
+			ImageMode:      "studio",
+			FreeImageRoute: "legacy",
+			PaidImageRoute: "responses",
+		},
+	}
+
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate() returned error: %v", err)
+	}
+	if cfg.Storage.ImageConversationStorage != "server" {
+		t.Fatalf("ImageConversationStorage = %q, want server", cfg.Storage.ImageConversationStorage)
+	}
+	if cfg.Storage.ImageDataStorage != "server" {
+		t.Fatalf("ImageDataStorage = %q, want server", cfg.Storage.ImageDataStorage)
+	}
+}
+
+func TestValidateCoercesMismatchedImageStorageModes(t *testing.T) {
+	cfg := &Config{
+		Storage: StorageConfig{
+			Backend:                  "redis",
+			ConfigBackend:            "redis",
+			ImageConversationStorage: "server",
+			ImageDataStorage:         "browser",
+		},
+		ChatGPT: ChatGPTConfig{
+			ImageMode:      "studio",
+			FreeImageRoute: "legacy",
+			PaidImageRoute: "responses",
+		},
+	}
+
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate() returned error: %v", err)
+	}
+	if cfg.Storage.ImageConversationStorage != "server" || cfg.Storage.ImageDataStorage != "server" {
+		t.Fatalf("expected mismatched storage modes to coerce to server/server, got %q/%q", cfg.Storage.ImageConversationStorage, cfg.Storage.ImageDataStorage)
+	}
+}

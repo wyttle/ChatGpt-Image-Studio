@@ -66,10 +66,20 @@ type AccountsConfig struct {
 }
 
 type StorageConfig struct {
-	AuthDir      string `toml:"auth_dir"`
-	StateFile    string `toml:"state_file"`
-	SyncStateDir string `toml:"sync_state_dir"`
-	ImageDir     string `toml:"image_dir"`
+	Backend                  string `toml:"backend"`
+	ConfigBackend            string `toml:"config_backend"`
+	AuthDir                  string `toml:"auth_dir"`
+	StateFile                string `toml:"state_file"`
+	SyncStateDir             string `toml:"sync_state_dir"`
+	ImageDir                 string `toml:"image_dir"`
+	ImageStorage             string `toml:"image_storage"`
+	ImageConversationStorage string `toml:"image_conversation_storage"`
+	ImageDataStorage         string `toml:"image_data_storage"`
+	SQLitePath               string `toml:"sqlite_path"`
+	RedisAddr                string `toml:"redis_addr"`
+	RedisPassword            string `toml:"redis_password"`
+	RedisDB                  int    `toml:"redis_db"`
+	RedisPrefix              string `toml:"redis_prefix"`
 }
 
 type SyncConfig struct {
@@ -99,6 +109,25 @@ type CPAConfig struct {
 	RouteStrategy  string `toml:"route_strategy"`
 }
 
+type NewAPIConfig struct {
+	BaseURL        string `toml:"base_url"`
+	Username       string `toml:"username"`
+	Password       string `toml:"password"`
+	AccessToken    string `toml:"access_token"`
+	UserID         int    `toml:"user_id"`
+	SessionCookie  string `toml:"session_cookie"`
+	RequestTimeout int    `toml:"request_timeout"`
+}
+
+type Sub2APIConfig struct {
+	BaseURL        string `toml:"base_url"`
+	Email          string `toml:"email"`
+	Password       string `toml:"password"`
+	APIKey         string `toml:"api_key"`
+	GroupID        string `toml:"group_id"`
+	RequestTimeout int    `toml:"request_timeout"`
+}
+
 type Config struct {
 	mu     sync.RWMutex `toml:"-"`
 	loadMu sync.Mutex   `toml:"-"`
@@ -114,6 +143,8 @@ type Config struct {
 	Log      LogConfig      `toml:"log"`
 	Proxy    ProxyConfig    `toml:"proxy"`
 	CPA      CPAConfig      `toml:"cpa"`
+	NewAPI   NewAPIConfig   `toml:"newapi"`
+	Sub2API  Sub2APIConfig  `toml:"sub2api"`
 }
 
 func New(rootDir string) *Config {
@@ -249,25 +280,9 @@ func (c *Config) SaveOverrides(values map[string]map[string]any) error {
 	c.loadMu.Lock()
 	defer c.loadMu.Unlock()
 
-	raw := map[string]any{}
-	if fileExists(c.paths.Override) {
-		loaded, err := loadOverrideMap(c.paths.Override)
-		if err != nil {
-			return fmt.Errorf("read override: %w", err)
-		}
-		raw = loaded
-	}
-	sanitizeOverrideMap(raw)
-
-	for section, entries := range values {
-		sec, ok := raw[section].(map[string]any)
-		if !ok {
-			sec = map[string]any{}
-		}
-		for key, value := range entries {
-			sec[key] = sanitizeOverrideEntry(section, key, value)
-		}
-		raw[section] = sec
+	raw, err := mergeOverrideValues(c.paths.Override, values)
+	if err != nil {
+		return err
 	}
 
 	if err := writeOverrideMap(c.paths.Override, raw); err != nil {
@@ -292,6 +307,75 @@ func (c *Config) SaveOverrides(values map[string]map[string]any) error {
 	c.loaded = true
 	c.mu.Unlock()
 	return nil
+}
+
+func (c *Config) PersistOverrideFile(values map[string]map[string]any) error {
+	c.loadMu.Lock()
+	defer c.loadMu.Unlock()
+
+	raw, err := mergeOverrideValues(c.paths.Override, values)
+	if err != nil {
+		return err
+	}
+	return writeOverrideMap(c.paths.Override, raw)
+}
+
+func (c *Config) ApplyOverrides(values map[string]map[string]any) error {
+	c.loadMu.Lock()
+	defer c.loadMu.Unlock()
+
+	raw := map[string]any{}
+	for section, entries := range values {
+		sectionMap := map[string]any{}
+		for key, value := range entries {
+			sectionMap[key] = sanitizeOverrideEntry(section, key, value)
+		}
+		raw[section] = sectionMap
+	}
+	sanitizeOverrideMap(raw)
+
+	next := &Config{paths: c.paths}
+	c.mu.RLock()
+	next.copyFrom(c)
+	next.paths = c.paths
+	c.mu.RUnlock()
+
+	if err := applyOverrideMap(reflect.ValueOf(next).Elem(), raw); err != nil {
+		return err
+	}
+	if err := next.validate(); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	c.copyFrom(next)
+	c.loaded = true
+	c.mu.Unlock()
+	return nil
+}
+
+func mergeOverrideValues(path string, values map[string]map[string]any) (map[string]any, error) {
+	raw := map[string]any{}
+	if fileExists(path) {
+		loaded, err := loadOverrideMap(path)
+		if err != nil {
+			return nil, fmt.Errorf("read override: %w", err)
+		}
+		raw = loaded
+	}
+	sanitizeOverrideMap(raw)
+
+	for section, entries := range values {
+		sec, ok := raw[section].(map[string]any)
+		if !ok {
+			sec = map[string]any{}
+		}
+		for key, value := range entries {
+			sec[key] = sanitizeOverrideEntry(section, key, value)
+		}
+		raw[section] = sec
+	}
+	return raw, nil
 }
 
 func LoadDefaults(paths Paths) (*Config, error) {
@@ -349,6 +433,8 @@ func (c *Config) copyFrom(other *Config) {
 	c.Log = other.Log
 	c.Proxy = other.Proxy
 	c.CPA = other.CPA
+	c.NewAPI = other.NewAPI
+	c.Sub2API = other.Sub2API
 	c.paths = other.paths
 }
 
@@ -433,6 +519,21 @@ func (c *Config) validate() error {
 	}
 
 	c.CPA.RouteStrategy = normalizeCPAImageRouteStrategy(c.CPA.RouteStrategy)
+	c.Storage.Backend = normalizeStorageBackend(c.Storage.Backend)
+	c.Storage.ConfigBackend = normalizeConfigBackend(c.Storage.ConfigBackend)
+	legacyImageStorage := strings.ToLower(strings.TrimSpace(c.Storage.ImageStorage))
+	if strings.TrimSpace(c.Storage.ImageConversationStorage) == "" && legacyImageStorage != "" {
+		c.Storage.ImageConversationStorage = legacyImageStorage
+	}
+	if strings.TrimSpace(c.Storage.ImageDataStorage) == "" && legacyImageStorage != "" {
+		c.Storage.ImageDataStorage = legacyImageStorage
+	}
+	c.Storage.ImageConversationStorage = normalizeImageStorage(c.Storage.ImageConversationStorage)
+	c.Storage.ImageDataStorage = normalizeImageStorage(c.Storage.ImageDataStorage)
+	if c.Storage.ImageConversationStorage != c.Storage.ImageDataStorage {
+		c.Storage.ImageDataStorage = c.Storage.ImageConversationStorage
+	}
+	c.Storage.ImageStorage = c.Storage.ImageConversationStorage
 
 	if !c.Proxy.Enabled {
 		return nil
@@ -480,6 +581,37 @@ func normalizeImageMode(mode string) (string, bool) {
 		return "cpa", true
 	default:
 		return "", false
+	}
+}
+
+func normalizeStorageBackend(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "current", "local":
+		return "current"
+	case "sqlite":
+		return "sqlite"
+	case "redis":
+		return "redis"
+	default:
+		return "current"
+	}
+}
+
+func normalizeConfigBackend(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "redis":
+		return "redis"
+	default:
+		return "file"
+	}
+}
+
+func normalizeImageStorage(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "server":
+		return "server"
+	default:
+		return "browser"
 	}
 }
 

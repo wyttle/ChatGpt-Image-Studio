@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"chatgpt2api/handler"
@@ -22,18 +23,32 @@ import (
 	"chatgpt2api/internal/cliproxy"
 	"chatgpt2api/internal/config"
 	"chatgpt2api/internal/middleware"
+	"chatgpt2api/internal/newapi"
+	"chatgpt2api/internal/sub2api"
 )
 
 type Server struct {
 	cfg                    *config.Config
+	runtimeMu              sync.RWMutex
 	store                  *accounts.Store
 	syncClient             *cliproxy.Client
+	syncRunMu              sync.RWMutex
+	syncRunCache           map[string]*sourceSyncRunResult
+	accountRefreshMu       sync.RWMutex
+	accountRefreshRun      *accountRefreshRunResult
 	staticDir              string
 	reqLogs                *imageRequestLogStore
 	imageTasks             *imageTaskStore
 	officialClientFactory  func(accessToken, proxyURL string, authData map[string]any, requestConfig handler.ImageRequestConfig) imageWorkflowClient
 	responsesClientFactory func(accessToken, proxyURL string, authData map[string]any, requestConfig handler.ImageRequestConfig) imageWorkflowClient
 	cpaClientFactory       func(baseURL, apiKey string, timeout time.Duration, routeStrategy string) cpaRouteAwareImageWorkflowClient
+	newAPIClientFactory    func(cfg *config.Config) *newapi.Client
+	sub2apiClientFactory   func(cfg *config.Config) *sub2api.Client
+	sourceClientMu         sync.Mutex
+	cachedNewAPIClient     *newapi.Client
+	cachedNewAPIKey        string
+	cachedSub2APIClient    *sub2api.Client
+	cachedSub2APIKey       string
 }
 
 type requestError struct {
@@ -41,7 +56,22 @@ type requestError struct {
 	message string
 }
 
+type accountRefreshRunResult struct {
+	OK         bool   `json:"ok"`
+	Running    bool   `json:"running"`
+	Error      string `json:"error,omitempty"`
+	Total      int    `json:"total"`
+	Processed  int    `json:"processed"`
+	Refreshed  int    `json:"refreshed"`
+	Failed     int    `json:"failed"`
+	Current    string `json:"current,omitempty"`
+	StartedAt  string `json:"started_at"`
+	FinishedAt string `json:"finished_at"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+}
+
 const cpaFixedImageModel = "gpt-image-2"
+const maxBulkAccountRefreshWorkers = 4
 
 func (e *requestError) Error() string {
 	return firstNonEmpty(e.message, e.code)
@@ -49,12 +79,13 @@ func (e *requestError) Error() string {
 
 func NewServer(cfg *config.Config, store *accounts.Store, syncClient *cliproxy.Client) *Server {
 	return &Server{
-		cfg:        cfg,
-		store:      store,
-		syncClient: syncClient,
-		staticDir:   cfg.ResolvePath(cfg.Server.StaticDir),
-		reqLogs:     newImageRequestLogStore(),
-		imageTasks:  newImageTaskStore(),
+		cfg:          cfg,
+		store:        store,
+		syncClient:   syncClient,
+		syncRunCache: map[string]*sourceSyncRunResult{},
+		staticDir:    cfg.ResolvePath(cfg.Server.StaticDir),
+		reqLogs:      newImageRequestLogStore(),
+		imageTasks:   newImageTaskStore(),
 		officialClientFactory: func(accessToken, proxyURL string, authData map[string]any, requestConfig handler.ImageRequestConfig) imageWorkflowClient {
 			return handler.NewChatGPTClientWithProxyAndConfig(
 				accessToken,
@@ -69,7 +100,274 @@ func NewServer(cfg *config.Config, store *accounts.Store, syncClient *cliproxy.C
 		cpaClientFactory: func(baseURL, apiKey string, timeout time.Duration, routeStrategy string) cpaRouteAwareImageWorkflowClient {
 			return newCPAImageClient(baseURL, apiKey, timeout, routeStrategy)
 		},
+		newAPIClientFactory: func(cfg *config.Config) *newapi.Client {
+			timeout := time.Duration(max(10, cfg.NewAPI.RequestTimeout)) * time.Second
+			return newapi.New(
+				cfg.NewAPI.BaseURL,
+				cfg.NewAPI.Username,
+				cfg.NewAPI.Password,
+				cfg.NewAPI.AccessToken,
+				cfg.NewAPI.UserID,
+				cfg.NewAPI.SessionCookie,
+				timeout,
+				cfg.SyncProxyURL(),
+			)
+		},
+		sub2apiClientFactory: func(cfg *config.Config) *sub2api.Client {
+			timeout := time.Duration(max(10, cfg.Sub2API.RequestTimeout)) * time.Second
+			return sub2api.New(
+				cfg.Sub2API.BaseURL,
+				cfg.Sub2API.Email,
+				cfg.Sub2API.Password,
+				cfg.Sub2API.APIKey,
+				cfg.Sub2API.GroupID,
+				timeout,
+				cfg.SyncProxyURL(),
+			)
+		},
 	}
+}
+
+func (s *Server) getStore() *accounts.Store {
+	s.runtimeMu.RLock()
+	defer s.runtimeMu.RUnlock()
+	return s.store
+}
+
+func (s *Server) getSyncClient() *cliproxy.Client {
+	s.runtimeMu.RLock()
+	defer s.runtimeMu.RUnlock()
+	return s.syncClient
+}
+
+func (s *Server) getStaticDir() string {
+	s.runtimeMu.RLock()
+	defer s.runtimeMu.RUnlock()
+	return s.staticDir
+}
+
+func (s *Server) swapRuntime(store *accounts.Store, syncClient *cliproxy.Client, staticDir string) *accounts.Store {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	previous := s.store
+	s.store = store
+	s.syncClient = syncClient
+	s.staticDir = staticDir
+	return previous
+}
+
+func (s *Server) buildSyncClientFromConfig() *cliproxy.Client {
+	timeout := time.Duration(max(10, s.cfg.Sync.RequestTimeout)) * time.Second
+	return cliproxy.New(s.cfg.Sync.Enabled, s.cfg.Sync.BaseURL, s.cfg.Sync.ManagementKey, s.cfg.Sync.ProviderType, timeout, s.cfg.SyncProxyURL())
+}
+
+func (s *Server) getNewAPIClient() *newapi.Client {
+	key := newAPIClientCacheKey(s.cfg)
+	s.sourceClientMu.Lock()
+	defer s.sourceClientMu.Unlock()
+	if s.cachedNewAPIClient != nil && s.cachedNewAPIKey == key {
+		return s.cachedNewAPIClient
+	}
+	client := s.newAPIClientFactory(s.cfg)
+	s.cachedNewAPIClient = client
+	s.cachedNewAPIKey = key
+	return client
+}
+
+func (s *Server) getSub2APIClient() *sub2api.Client {
+	key := sub2APIClientCacheKey(s.cfg)
+	s.sourceClientMu.Lock()
+	defer s.sourceClientMu.Unlock()
+	if s.cachedSub2APIClient != nil && s.cachedSub2APIKey == key {
+		return s.cachedSub2APIClient
+	}
+	client := s.sub2apiClientFactory(s.cfg)
+	s.cachedSub2APIClient = client
+	s.cachedSub2APIKey = key
+	return client
+}
+
+func (s *Server) getAccountRefreshRun() *accountRefreshRunResult {
+	s.accountRefreshMu.RLock()
+	defer s.accountRefreshMu.RUnlock()
+	if s.accountRefreshRun == nil {
+		return nil
+	}
+	copy := *s.accountRefreshRun
+	return &copy
+}
+
+func (s *Server) setAccountRefreshRun(run *accountRefreshRunResult) {
+	s.accountRefreshMu.Lock()
+	defer s.accountRefreshMu.Unlock()
+	if run == nil {
+		s.accountRefreshRun = nil
+		return
+	}
+	copy := *run
+	s.accountRefreshRun = &copy
+}
+
+func (s *Server) finishAccountRefreshRun(run *accountRefreshRunResult) {
+	if run == nil {
+		return
+	}
+	run.Running = false
+	run.Current = ""
+	run.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	run.UpdatedAt = run.FinishedAt
+	s.setAccountRefreshRun(run)
+}
+
+func newAPIClientCacheKey(cfg *config.Config) string {
+	values := []string{
+		cfg.NewAPI.BaseURL,
+		cfg.NewAPI.Username,
+		cfg.NewAPI.Password,
+		cfg.NewAPI.AccessToken,
+		strconv.Itoa(cfg.NewAPI.UserID),
+		cfg.NewAPI.SessionCookie,
+		strconv.Itoa(cfg.NewAPI.RequestTimeout),
+		cfg.SyncProxyURL(),
+	}
+	return strings.Join(values, "\x00")
+}
+
+func sub2APIClientCacheKey(cfg *config.Config) string {
+	values := []string{
+		cfg.Sub2API.BaseURL,
+		cfg.Sub2API.Email,
+		cfg.Sub2API.Password,
+		cfg.Sub2API.APIKey,
+		cfg.Sub2API.GroupID,
+		strconv.Itoa(cfg.Sub2API.RequestTimeout),
+		cfg.SyncProxyURL(),
+	}
+	return strings.Join(values, "\x00")
+}
+
+func (s *Server) reloadRuntimeDependencies(previous configPayload) error {
+	nextStaticDir := s.cfg.ResolvePath(s.cfg.Server.StaticDir)
+	nextSyncClient := s.buildSyncClientFromConfig()
+	currentStore := s.getStore()
+	nextStore := currentStore
+
+	if storageSettingsChanged(previous, s.buildConfigPayload()) {
+		reloadedStore, err := accounts.NewStore(s.cfg)
+		if err != nil {
+			return err
+		}
+		snapshot, err := currentStore.Snapshot()
+		if err != nil {
+			_ = reloadedStore.Close()
+			return err
+		}
+		if err := reloadedStore.ReplaceAllData(snapshot); err != nil {
+			_ = reloadedStore.Close()
+			return err
+		}
+		nextStore = reloadedStore
+	}
+	if err := s.migrateImageFilesIfNeeded(previous, s.buildConfigPayload()); err != nil {
+		if nextStore != currentStore && nextStore != nil {
+			_ = nextStore.Close()
+		}
+		return err
+	}
+
+	previousStore := s.swapRuntime(nextStore, nextSyncClient, nextStaticDir)
+	if previousStore != nil && previousStore != nextStore {
+		_ = previousStore.Close()
+	}
+	return nil
+}
+
+func (s *Server) migrateImageFilesIfNeeded(previous, next configPayload) error {
+	oldDir := s.cfg.ResolvePath(previous.Storage.ImageDir)
+	newDir := s.cfg.ResolvePath(next.Storage.ImageDir)
+	if strings.EqualFold(filepath.Clean(oldDir), filepath.Clean(newDir)) {
+		return nil
+	}
+	info, err := os.Stat(oldDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		return err
+	}
+	normalizedNewDir := filepath.Clean(newDir)
+	return filepath.Walk(oldDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			if strings.HasPrefix(filepath.Clean(path)+string(os.PathSeparator), normalizedNewDir+string(os.PathSeparator)) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(oldDir, path)
+		if err != nil {
+			return err
+		}
+		targetPath := filepath.Join(newDir, rel)
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			return err
+		}
+		if _, err := os.Stat(targetPath); err == nil {
+			return os.Remove(path)
+		}
+		if err := os.Rename(path, targetPath); err == nil {
+			return nil
+		}
+		if err := copyFile(path, targetPath); err != nil {
+			return err
+		}
+		return os.Remove(path)
+	})
+}
+
+func copyFile(sourcePath, targetPath string) error {
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	targetFile, err := os.Create(targetPath)
+	if err != nil {
+		return err
+	}
+	defer targetFile.Close()
+
+	if _, err := io.Copy(targetFile, sourceFile); err != nil {
+		return err
+	}
+	return nil
+}
+
+func storageSettingsChanged(previous, next configPayload) bool {
+	return previous.Storage.Backend != next.Storage.Backend ||
+		previous.Storage.ConfigBackend != next.Storage.ConfigBackend ||
+		previous.Storage.AuthDir != next.Storage.AuthDir ||
+		previous.Storage.StateFile != next.Storage.StateFile ||
+		previous.Storage.SyncStateDir != next.Storage.SyncStateDir ||
+		previous.Storage.SQLitePath != next.Storage.SQLitePath ||
+		previous.Storage.ImageDir != next.Storage.ImageDir ||
+		previous.Storage.ImageStorage != next.Storage.ImageStorage ||
+		previous.Storage.ImageConversationStorage != next.Storage.ImageConversationStorage ||
+		previous.Storage.ImageDataStorage != next.Storage.ImageDataStorage ||
+		previous.Storage.RedisAddr != next.Storage.RedisAddr ||
+		previous.Storage.RedisPassword != next.Storage.RedisPassword ||
+		previous.Storage.RedisDB != next.Storage.RedisDB ||
+		previous.Storage.RedisPrefix != next.Storage.RedisPrefix ||
+		previous.Sync.ProviderType != next.Sync.ProviderType
 }
 
 func (s *Server) Handler() http.Handler {
@@ -85,22 +383,33 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/accounts/import", s.requireUIAuth(http.HandlerFunc(s.handleImportAccounts)))
 	mux.Handle("DELETE /api/accounts", s.requireUIAuth(http.HandlerFunc(s.handleDeleteAccounts)))
 	mux.Handle("POST /api/accounts/refresh", s.requireUIAuth(http.HandlerFunc(s.handleRefreshAccounts)))
+	mux.Handle("POST /api/accounts/refresh-all", s.requireUIAuth(http.HandlerFunc(s.handleRefreshAllAccounts)))
+	mux.Handle("GET /api/accounts/refresh-progress", s.requireUIAuth(http.HandlerFunc(s.handleAccountRefreshProgress)))
 	mux.Handle("POST /api/accounts/update", s.requireUIAuth(http.HandlerFunc(s.handleUpdateAccount)))
 	mux.Handle("GET /api/config", s.requireUIAuth(http.HandlerFunc(s.handleGetConfig)))
 	mux.Handle("GET /api/config/defaults", s.requireUIAuth(http.HandlerFunc(s.handleGetDefaultConfig)))
 	mux.Handle("PUT /api/config", s.requireUIAuth(http.HandlerFunc(s.handleUpdateConfig)))
+	mux.Handle("POST /api/proxy/test", s.requireUIAuth(http.HandlerFunc(s.handleProxyTest)))
+	mux.Handle("POST /api/integration/test", s.requireUIAuth(http.HandlerFunc(s.handleIntegrationTest)))
+	mux.Handle("POST /api/integration/newapi/token", s.requireUIAuth(http.HandlerFunc(s.handleNewAPITokenDiscover)))
+	mux.Handle("POST /api/integration/sub2api/groups", s.requireUIAuth(http.HandlerFunc(s.handleSub2APIGroups)))
 	mux.Handle("GET /api/requests", s.requireUIAuth(http.HandlerFunc(s.handleListRequestLogs)))
 	mux.Handle("GET /api/sync/status", s.requireUIAuth(http.HandlerFunc(s.handleSyncStatus)))
 	mux.Handle("POST /api/sync/run", s.requireUIAuth(http.HandlerFunc(s.handleRunSync)))
 	mux.Handle("GET /api/image-tasks/{id}", s.requireImageAuth(http.HandlerFunc(s.handleGetImageTask)))
+	mux.Handle("GET /api/image/conversations", s.requireUIAuth(http.HandlerFunc(s.handleListImageConversations)))
+	mux.Handle("DELETE /api/image/conversations", s.requireUIAuth(http.HandlerFunc(s.handleClearImageConversations)))
+	mux.Handle("POST /api/image/conversations/import", s.requireUIAuth(http.HandlerFunc(s.handleImportImageConversations)))
+	mux.Handle("GET /api/image/conversations/{id}", s.requireUIAuth(http.HandlerFunc(s.handleGetImageConversation)))
+	mux.Handle("PUT /api/image/conversations/{id}", s.requireUIAuth(http.HandlerFunc(s.handleSaveImageConversation)))
+	mux.Handle("DELETE /api/image/conversations/{id}", s.requireUIAuth(http.HandlerFunc(s.handleDeleteImageConversation)))
 
 	mux.Handle("POST /v1/images/generations", s.requireImageAuth(http.HandlerFunc(s.handleImageGenerations)))
 	mux.Handle("POST /v1/images/edits", s.requireImageAuth(http.HandlerFunc(s.handleImageEdits)))
-	mux.Handle("POST /v1/images/upscale", s.requireImageAuth(http.HandlerFunc(s.handleImageUpscale)))
 	mux.Handle("POST /v1/chat/completions", s.requireImageAuth(http.HandlerFunc(s.handleImageChatCompletions)))
 	mux.Handle("POST /v1/responses", s.requireImageAuth(http.HandlerFunc(s.handleImageResponses)))
 	mux.Handle("GET /v1/models", s.requireImageAuth(http.HandlerFunc(s.handleModels)))
-	mux.Handle("GET /v1/files/image/", handleImageFile())
+	mux.Handle("GET /v1/files/image/", http.HandlerFunc(s.handleImageFile))
 
 	mux.Handle("/", http.HandlerFunc(s.handleWebApp))
 
@@ -128,7 +437,8 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListAccounts()
+	store := s.getStore()
+	items, err := store.ListAccounts()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -137,6 +447,7 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAccountQuota(w http.ResponseWriter, r *http.Request) {
+	store := s.getStore()
 	accountID := strings.TrimSpace(r.PathValue("id"))
 	if accountID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "account id is required"})
@@ -153,7 +464,7 @@ func (s *Server) handleAccountQuota(w http.ResponseWriter, r *http.Request) {
 	refreshed := false
 	refreshError := ""
 	if refreshRequested {
-		_, refreshErrors, refreshErr := s.store.RefreshAccounts(r.Context(), []string{account.AccessToken})
+		_, refreshErrors, refreshErr := store.RefreshAccounts(r.Context(), []string{account.AccessToken})
 		if refreshErr != nil {
 			refreshError = refreshErr.Error()
 		}
@@ -161,7 +472,7 @@ func (s *Server) handleAccountQuota(w http.ResponseWriter, r *http.Request) {
 			refreshError = firstNonEmpty(refreshErrors[0].Error, refreshError)
 		}
 		if refreshError == "" {
-			if updated, updatedErr := s.store.GetAccountByToken(account.AccessToken); updatedErr == nil && updated != nil {
+			if updated, updatedErr := store.GetAccountByToken(account.AccessToken); updatedErr == nil && updated != nil {
 				account = *updated
 			}
 			refreshed = true
@@ -184,6 +495,11 @@ func (s *Server) handleAccountQuota(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateAccounts(w http.ResponseWriter, r *http.Request) {
+	store := s.getStore()
+	if s.configuredImageMode() != "studio" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "导入 Token 仅支持 Studio 模式"})
+		return
+	}
 	var body struct {
 		Tokens []string `json:"tokens"`
 	}
@@ -195,18 +511,18 @@ func (s *Server) handleCreateAccounts(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "tokens is required"})
 		return
 	}
-	added, skipped, err := s.store.AddAccounts(body.Tokens)
+	added, skipped, err := store.AddAccounts(body.Tokens)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 
-	refreshed, refreshErrors, err := s.store.RefreshAccounts(r.Context(), body.Tokens)
+	refreshed, refreshErrors, err := store.RefreshAccounts(r.Context(), body.Tokens)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	items, err := s.store.ListAccounts()
+	items, err := store.ListAccounts()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -222,6 +538,7 @@ func (s *Server) handleCreateAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleImportAccounts(w http.ResponseWriter, r *http.Request) {
+	store := s.getStore()
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid multipart form"})
 		return
@@ -237,7 +554,7 @@ func (s *Server) handleImportAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	imported, importedTokens, skipped, importFailures, err := s.store.ImportAuthFiles(files)
+	imported, importedTokens, skipped, importFailures, err := store.ImportAuthFiles(files)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -246,14 +563,14 @@ func (s *Server) handleImportAccounts(w http.ResponseWriter, r *http.Request) {
 	refreshed := 0
 	refreshErrors := []accounts.RefreshError{}
 	if len(importedTokens) > 0 {
-		refreshed, refreshErrors, err = s.store.RefreshAccounts(r.Context(), importedTokens)
+		refreshed, refreshErrors, err = store.RefreshAccounts(r.Context(), importedTokens)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
 	}
 
-	items, err := s.store.ListAccounts()
+	items, err := store.ListAccounts()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -275,6 +592,7 @@ func (s *Server) handleImportAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteAccounts(w http.ResponseWriter, r *http.Request) {
+	store := s.getStore()
 	var body struct {
 		Tokens []string `json:"tokens"`
 	}
@@ -283,12 +601,12 @@ func (s *Server) handleDeleteAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	removed, err := s.store.DeleteAccounts(body.Tokens)
+	removed, err := store.DeleteAccounts(body.Tokens)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	items, err := s.store.ListAccounts()
+	items, err := store.ListAccounts()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -298,6 +616,7 @@ func (s *Server) handleDeleteAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRefreshAccounts(w http.ResponseWriter, r *http.Request) {
+	store := s.getStore()
 	var body struct {
 		AccessTokens []string `json:"access_tokens"`
 	}
@@ -306,12 +625,12 @@ func (s *Server) handleRefreshAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	refreshed, refreshErrors, err := s.store.RefreshAccounts(r.Context(), body.AccessTokens)
+	refreshed, refreshErrors, err := store.RefreshAccounts(r.Context(), body.AccessTokens)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	items, err := s.store.ListAccounts()
+	items, err := store.ListAccounts()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -324,7 +643,76 @@ func (s *Server) handleRefreshAccounts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleRefreshAllAccounts(w http.ResponseWriter, r *http.Request) {
+	if current := s.getAccountRefreshRun(); current != nil && current.Running {
+		writeJSON(w, http.StatusOK, map[string]any{"progress": current, "alreadyRunning": true})
+		return
+	}
+
+	items, err := s.getStore().ListAccounts()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	tokens := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.AccessToken) == "" {
+			continue
+		}
+		tokens = append(tokens, item.AccessToken)
+	}
+
+	startedAt := time.Now().UTC().Format(time.RFC3339)
+	run := &accountRefreshRunResult{
+		OK:        true,
+		Running:   true,
+		Total:     len(tokens),
+		StartedAt: startedAt,
+		UpdatedAt: startedAt,
+	}
+	s.setAccountRefreshRun(run)
+
+	if len(tokens) == 0 {
+		s.finishAccountRefreshRun(run)
+		writeJSON(w, http.StatusOK, map[string]any{"progress": run})
+		return
+	}
+
+	store := s.getStore()
+	go func(tokens []string) {
+		refreshed, refreshErrors, refreshErr := store.RefreshAccountsWithOptions(context.Background(), tokens, accounts.RefreshOptions{
+			MaxWorkers: maxBulkAccountRefreshWorkers,
+			Progress: func(progress accounts.RefreshProgress) {
+				run.Refreshed = progress.Refreshed
+				run.Failed = progress.Failed
+				run.Processed = progress.Processed
+				run.Current = progress.Current
+				run.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+				s.setAccountRefreshRun(run)
+			},
+		})
+		if refreshErr != nil {
+			run.OK = false
+			run.Error = refreshErr.Error()
+		} else if len(refreshErrors) > 0 {
+			run.OK = false
+			run.Error = firstNonEmpty(refreshErrors[0].Error, "")
+		}
+		run.Refreshed = refreshed
+		run.Failed = len(refreshErrors)
+		run.Processed = len(tokens)
+		s.finishAccountRefreshRun(run)
+	}(append([]string(nil), tokens...))
+
+	writeJSON(w, http.StatusOK, map[string]any{"progress": run})
+}
+
+func (s *Server) handleAccountRefreshProgress(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"progress": s.getAccountRefreshRun()})
+}
+
 func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
+	store := s.getStore()
 	var body struct {
 		AccessToken string `json:"access_token"`
 		Type        string `json:"type"`
@@ -351,7 +739,7 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		update.Note = &body.Note
 	}
 
-	item, err := s.store.UpdateAccount(body.AccessToken, update)
+	item, err := store.UpdateAccount(body.AccessToken, update)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") {
@@ -360,7 +748,7 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]any{"error": err.Error()})
 		return
 	}
-	items, err := s.store.ListAccounts()
+	items, err := store.ListAccounts()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -370,7 +758,13 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
-	status, err := s.store.SyncStatus(r.Context(), s.syncClient)
+	source := firstNonEmpty(r.URL.Query().Get("source"), "cpa")
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("progress_only")), "1") ||
+		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("progress_only")), "true") {
+		writeJSON(w, http.StatusOK, buildSourceSyncProgressStatus(source, s.getSourceSyncRun(normalizeSyncSource(source))))
+		return
+	}
+	status, err := s.buildSourceSyncStatus(r.Context(), source)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -380,17 +774,19 @@ func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRunSync(w http.ResponseWriter, r *http.Request) {
 	var body struct {
+		Source    string `json:"source"`
 		Direction string `json:"direction"`
 	}
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
-	result, err := s.store.RunSync(r.Context(), s.syncClient, body.Direction)
+	source := firstNonEmpty(body.Source, r.URL.Query().Get("source"), "cpa")
+	result, err := s.runSourceSync(r.Context(), source, body.Direction)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	status, statusErr := s.store.SyncStatus(r.Context(), s.syncClient)
+	status, statusErr := s.buildSourceSyncStatus(r.Context(), source)
 	if statusErr != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"result": result})
 		return
@@ -457,6 +853,8 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	}
 	requestedModel := normalizeRequestedImageModel(r.FormValue("model"), s.cfg.ChatGPT.Model)
 	responseFormat := firstNonEmpty(r.FormValue("response_format"), s.cfg.App.ImageFormat, "url")
+	size := strings.TrimSpace(r.FormValue("size"))
+	quality := strings.TrimSpace(r.FormValue("quality"))
 	mask, err := readOptionalMultipartFile(r.MultipartForm, "mask")
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -482,7 +880,7 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	execute := func(ctx context.Context, taskReq *http.Request) (map[string]any, error) {
 		var data []map[string]any
 		if inpaintRequest.originalFileID != "" && inpaintRequest.originalGenID != "" {
-			result, err := s.withImageResultsWithMetadata(ctx, "selection-edit", responseFormat, inpaintRequest.sourceAccountID, requestedModel, false, newImageRequestMetadata(prompt, "", ""), func(client imageWorkflowClient, upstreamModel string) ([]handler.ImageResult, error) {
+			result, err := s.withImageResultsWithMetadata(ctx, "selection-edit", responseFormat, inpaintRequest.sourceAccountID, requestedModel, false, newImageRequestMetadata(prompt, size, quality), func(client imageWorkflowClient, upstreamModel string) ([]handler.ImageResult, error) {
 				return client.InpaintImageByMask(
 					ctx,
 					prompt,
@@ -504,6 +902,8 @@ func (s *Server) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 				Prompt:         prompt,
 				Images:         images,
 				Mask:           mask,
+				Size:           size,
+				Quality:        quality,
 				ResponseFormat: responseFormat,
 			}, taskReq)
 			if err != nil {
@@ -621,12 +1021,13 @@ func (s *Server) withImageResultsFilteredWithMetadata(
 	run func(client imageWorkflowClient, upstreamModel string) ([]handler.ImageResult, error),
 	r *http.Request,
 ) ([]map[string]any, error) {
+	store := s.getStore()
 	mode := s.configuredImageMode()
 	if mode == "cpa" {
 		return s.runPureCPAImageRequest(ctx, operation, responseFormat, requestedModel, strings.TrimSpace(preferredAccountID) != "", metadata, run, r)
 	}
 	if strings.TrimSpace(preferredAccountID) != "" {
-		authFile, account, err := s.store.FindImageAuthByID(preferredAccountID)
+		authFile, account, err := store.FindImageAuthByID(preferredAccountID)
 		if err != nil {
 			if errors.Is(err, accounts.ErrSourceAccountNotFound) {
 				return nil, newRequestError("source_account_not_found", "原始图片所属账号不存在，请使用普通编辑重试")
@@ -640,7 +1041,7 @@ func (s *Server) withImageResultsFilteredWithMetadata(
 	attempted := map[string]struct{}{}
 	var lastRetryableErr error
 	for {
-		authFile, account, err := s.store.AcquireImageAuthFilteredWithDisabledOption(attempted, allowAccount, s.allowDisabledStudioImageAccounts())
+		authFile, account, err := store.AcquireImageAuthFilteredWithDisabledOption(attempted, allowAccount, s.allowDisabledStudioImageAccounts())
 		if err != nil {
 			return nil, resolveImageAcquireError(mode, err, lastRetryableErr)
 		}
@@ -786,16 +1187,17 @@ func (s *Server) runPureCPAImageRequest(
 	}
 	metadata.applyTo(&entry)
 	s.logImageRequest(entry)
-	return buildImageResponse(r, client, results, responseFormat, ""), nil
+	return buildImageResponse(r, client, results, responseFormat, "", s.cfg.ResolvePath(s.cfg.Storage.ImageDir)), nil
 }
 
 func (s *Server) runImageRequest(ctx context.Context, authFile *accounts.LocalAuth, account accounts.PublicAccount, operation, responseFormat string, preferredAccount bool, requestedModel string, responsesEligible bool, metadata imageRequestMetadata, run func(client imageWorkflowClient, upstreamModel string) ([]handler.ImageResult, error), r *http.Request) ([]map[string]any, bool, error) {
+	store := s.getStore()
 	startedAt := time.Now()
-	refreshRequired := accounts.NeedsImageQuotaRefresh(account, time.Now())
+	refreshRequired := account.SourceKind == accounts.AccountSourceKindToken || accounts.NeedsImageQuotaRefresh(account, time.Now())
 	if refreshRequired {
-		_, refreshErrors, refreshErr := s.store.RefreshAccounts(ctx, []string{authFile.AccessToken})
+		_, refreshErrors, refreshErr := store.RefreshAccounts(ctx, []string{authFile.AccessToken})
 		if refreshErr == nil {
-			if refreshed, accountErr := s.store.GetAccountByToken(authFile.AccessToken); accountErr == nil && refreshed != nil {
+			if refreshed, accountErr := store.GetAccountByToken(authFile.AccessToken); accountErr == nil && refreshed != nil {
 				account = *refreshed
 			}
 		}
@@ -806,7 +1208,7 @@ func (s *Server) runImageRequest(ctx context.Context, authFile *accounts.LocalAu
 			return nil, true, refreshErr
 		}
 		if len(refreshErrors) > 0 && isInvalidRefreshError(refreshErrors[0].Error) {
-			s.store.MarkImageTokenAbnormal(authFile.AccessToken)
+			store.MarkImageTokenAbnormal(authFile.AccessToken)
 			if preferredAccount {
 				return nil, false, newRequestError("source_account_unavailable", "原始图片所属账号当前不可用，请使用普通编辑重试")
 			}
@@ -905,7 +1307,7 @@ func (s *Server) runImageRequest(ctx context.Context, authFile *accounts.LocalAu
 		imageToolModel = strings.TrimSpace(resolveLoggedImageToolModel(requestedModel))
 	}
 	if err != nil {
-		s.store.RecordImageResult(authFile.AccessToken, false)
+		store.RecordImageResult(authFile.AccessToken, false)
 		entry := imageRequestLogEntry{
 			StartedAt:      startedAt.Format(time.RFC3339Nano),
 			FinishedAt:     time.Now().Format(time.RFC3339Nano),
@@ -927,8 +1329,15 @@ func (s *Server) runImageRequest(ctx context.Context, authFile *accounts.LocalAu
 		}
 		metadata.applyTo(&entry)
 		s.logImageRequest(entry)
+		if isImageRateLimitError(err) {
+			store.MarkImageAccountLimited(authFile.AccessToken)
+			if preferredAccount {
+				return nil, false, newRequestError("source_account_rate_limited", "原始图片所属账号当前已限流，请稍后重试或使用普通编辑")
+			}
+			return nil, true, err
+		}
 		if isInvalidImageTokenError(err) {
-			s.store.MarkImageTokenAbnormal(authFile.AccessToken)
+			store.MarkImageTokenAbnormal(authFile.AccessToken)
 			if preferredAccount {
 				return nil, false, newRequestError("source_account_unavailable", "原始图片所属账号当前不可用，请使用普通编辑重试")
 			}
@@ -940,7 +1349,7 @@ func (s *Server) runImageRequest(ctx context.Context, authFile *accounts.LocalAu
 		return nil, false, err
 	}
 
-	s.store.RecordImageResult(authFile.AccessToken, true)
+	store.RecordImageResult(authFile.AccessToken, true)
 	entry := imageRequestLogEntry{
 		StartedAt:      startedAt.Format(time.RFC3339Nano),
 		FinishedAt:     time.Now().Format(time.RFC3339Nano),
@@ -961,7 +1370,7 @@ func (s *Server) runImageRequest(ctx context.Context, authFile *accounts.LocalAu
 	}
 	metadata.applyTo(&entry)
 	s.logImageRequest(entry)
-	return buildImageResponse(r, client, results, responseFormat, account.ID), false, nil
+	return buildImageResponse(r, client, results, responseFormat, account.ID, s.cfg.ResolvePath(s.cfg.Storage.ImageDir)), false, nil
 }
 
 func normalizeRequestedImageModel(requested, fallback string) string {
@@ -977,13 +1386,69 @@ func normalizeRequestedImageModel(requested, fallback string) string {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"object": "list",
-		"data": []map[string]any{
-			{"id": "gpt-image-1", "object": "model", "created": 1700000000, "owned_by": "openai"},
-			{"id": "gpt-image-2", "object": "model", "created": 1700000001, "owned_by": "openai"},
-		},
-	})
+	models := s.availableModels()
+	items := make([]map[string]any, 0, len(models))
+	for index, model := range models {
+		items = append(items, map[string]any{
+			"id":       model,
+			"object":   "model",
+			"created":  1700000000 + index,
+			"owned_by": "openai",
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": items})
+}
+
+func (s *Server) availableModels() []string {
+	seen := map[string]struct{}{}
+	items := make([]string, 0)
+	add := func(value string) {
+		model := strings.TrimSpace(value)
+		if model == "" {
+			return
+		}
+		if _, ok := seen[model]; ok {
+			return
+		}
+		seen[model] = struct{}{}
+		items = append(items, model)
+	}
+
+	add("gpt-image-2")
+	add(strings.TrimSpace(s.cfg.ChatGPT.Model))
+
+	accountsList, err := s.getStore().ListAccounts()
+	hasFree := err != nil
+	hasPaid := err != nil
+	if err == nil {
+		hasFree = false
+		hasPaid = false
+		for _, account := range accountsList {
+			switch account.Type {
+			case "Plus", "Pro", "Team":
+				hasPaid = true
+			case "Free":
+				hasFree = true
+			}
+		}
+	}
+
+	if hasFree {
+		add(s.cfg.ChatGPT.FreeImageModel)
+	}
+	if hasPaid {
+		add(s.cfg.ChatGPT.PaidImageModel)
+	}
+	if strings.EqualFold(strings.TrimSpace(s.cfg.ChatGPT.FreeImageModel), "auto") {
+		add("auto")
+	}
+	if s.cfg.ChatGPT.PaidImageRoute == "responses" || s.cfg.ChatGPT.FreeImageRoute == "responses" {
+		add("gpt-5.4-mini")
+		add("gpt-5.4")
+		add("gpt-5.5")
+		add("gpt-5-5-thinking")
+	}
+	return items
 }
 
 func (s *Server) handleWebApp(w http.ResponseWriter, r *http.Request) {
@@ -993,7 +1458,7 @@ func (s *Server) handleWebApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestPath := strings.TrimPrefix(r.URL.Path, "/")
-	asset := resolveStaticAsset(s.staticDir, requestPath)
+	asset := resolveStaticAsset(s.getStaticDir(), requestPath)
 	if asset == "" {
 		http.NotFound(w, r)
 		return
@@ -1198,7 +1663,7 @@ func decodeBase64Image(value string) ([]byte, error) {
 }
 
 func (s *Server) findAccountByID(accountID string) (accounts.PublicAccount, error) {
-	items, err := s.store.ListAccounts()
+	items, err := s.getStore().ListAccounts()
 	if err != nil {
 		return accounts.PublicAccount{}, err
 	}
@@ -1310,6 +1775,34 @@ func isInvalidImageTokenError(err error) bool {
 	}
 	message := strings.ToLower(err.Error())
 	for _, token := range []string{"http 401", "status 401", "unauthorized", "invalid authentication", "invalid_token"} {
+		if strings.Contains(message, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func isImageRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	for _, token := range []string{
+		"http 429",
+		" http 429",
+		"http 429:",
+		"http 429 ",
+		"status 429",
+		"too many requests",
+		"rate limit",
+		"rate_limit",
+		"quota exceeded",
+		"resource exhausted",
+		"temporarily unavailable",
+		"image generation limit",
+		"image generation quota",
+		"限流",
+	} {
 		if strings.Contains(message, token) {
 			return true
 		}

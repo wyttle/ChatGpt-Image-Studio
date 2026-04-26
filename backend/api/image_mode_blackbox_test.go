@@ -97,11 +97,13 @@ func (c *compatStubWorkflowClient) GenerateImage(ctx context.Context, prompt, mo
 	}, nil
 }
 
-func (c *compatStubWorkflowClient) EditImageByUpload(ctx context.Context, prompt, model string, images [][]byte, mask []byte) ([]handler.ImageResult, error) {
+func (c *compatStubWorkflowClient) EditImageByUpload(ctx context.Context, prompt, model string, images [][]byte, mask []byte, size, quality string) ([]handler.ImageResult, error) {
 	_ = ctx
 	_ = prompt
 	_ = images
 	_ = mask
+	_ = size
+	_ = quality
 	c.record("edit", model)
 	if c.editErr != nil {
 		return nil, c.editErr
@@ -306,7 +308,7 @@ func TestImageModeCompatibilityBlackBox(t *testing.T) {
 	}
 }
 
-func TestImageModeCompatibilityBlackBoxEditsAndUpscale(t *testing.T) {
+func TestImageModeCompatibilityBlackBoxEditsAndSelection(t *testing.T) {
 	if os.Getenv(imageModeCompatEnv) == "" {
 		t.Skipf("set %s=1 to run optional image mode compatibility tests", imageModeCompatEnv)
 	}
@@ -350,38 +352,6 @@ func TestImageModeCompatibilityBlackBoxEditsAndUpscale(t *testing.T) {
 			},
 			wantStatus:    http.StatusOK,
 			wantOperation: "edit",
-			wantRoute:     "responses",
-			wantDirection: "official",
-			wantUpstream:  "gpt-5.4-mini",
-			wantToolModel: "gpt-5.4-mini",
-			wantFactory:   "responses",
-		},
-		{
-			name: "legacy mix paid upscale is coerced to studio official responses",
-			scenario: imageModeCompatScenario{
-				imageMode:        "mix",
-				wantImageMode:    "studio",
-				accountType:      "Pro",
-				freeRoute:        "legacy",
-				freeModel:        "auto",
-				paidRoute:        "responses",
-				paidModel:        "gpt-5.4-mini",
-				cpaRouteStrategy: "images_api",
-				wantUpstream:     "gpt-5.4-mini",
-			},
-			requestBuilder: func(t *testing.T, server *Server) *http.Request {
-				t.Helper()
-				return newCompatMultipartRequest(t, "/v1/images/upscale", map[string]string{
-					"prompt":          "upscale prompt",
-					"model":           "gpt-image-2",
-					"response_format": "b64_json",
-					"scale":           "2x",
-				}, map[string][][]byte{
-					"image": {[]byte("upscale-image")},
-				}, server.cfg.App.APIKey)
-			},
-			wantStatus:    http.StatusOK,
-			wantOperation: "upscale",
 			wantRoute:     "responses",
 			wantDirection: "official",
 			wantUpstream:  "gpt-5.4-mini",
@@ -719,6 +689,7 @@ func seedImageModeCompatAccounts(cfg *config.Config, accountType string, account
 		fileName := firstNonEmpty(account.fileName, fmt.Sprintf("compat-%d.json", index+1))
 		authPayload := map[string]any{
 			"type":         "codex",
+			"source_kind":  accounts.AccountSourceKindAuthFile,
 			"access_token": firstNonEmpty(account.accessToken, fmt.Sprintf("token-%d", index+1)),
 			"email":        fmt.Sprintf("compat-%d@example.com", index+1),
 			"priority":     account.priority,

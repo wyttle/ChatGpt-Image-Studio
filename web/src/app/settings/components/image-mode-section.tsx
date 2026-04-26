@@ -1,5 +1,10 @@
 "use client";
 
+import { useState } from "react";
+import { Link2, LoaderCircle } from "lucide-react";
+import { toast } from "sonner";
+
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -8,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { ConfigPayload, ImageMode } from "@/lib/api";
+import { testIntegration, type ConfigPayload, type ImageMode, type IntegrationTestResult } from "@/lib/api";
 
 import { ConfigSection, Field, ToggleField, TooltipDetails, type SetConfigSection } from "./shared";
 
@@ -74,8 +79,41 @@ export function ImageModeSection({
   syncManagementKeyStatus,
   setSection,
 }: ImageModeSectionProps) {
+  const [isTestingCPA, setIsTestingCPA] = useState(false);
   const freeModelSelectOptions = withCurrentOption(freeImageModelOptions, config.chatgpt.freeImageModel);
   const paidModelSelectOptions = withCurrentOption(paidImageModelOptions, config.chatgpt.paidImageModel);
+
+  const buildIntegrationToastMessage = (result: IntegrationTestResult) => {
+    const segments = [result.message];
+    if (result.status > 0) {
+      segments.push(`HTTP ${result.status}`);
+    }
+    if (result.latency >= 0) {
+      segments.push(`${result.latency} ms`);
+    }
+    return segments.filter(Boolean).join(" / ");
+  };
+
+  const handleTestCPA = async () => {
+    setIsTestingCPA(true);
+    try {
+      const result = await testIntegration("cpa", {
+        cpa: {
+          ...config.cpa,
+          baseUrl: effectiveCPAImageBaseUrl,
+        },
+      });
+      if (result.ok) {
+        toast.success(buildIntegrationToastMessage(result));
+      } else {
+        toast.error(buildIntegrationToastMessage(result));
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "CPA 测试失败");
+    } finally {
+      setIsTestingCPA(false);
+    }
+  };
 
   return (
     <>
@@ -132,7 +170,7 @@ export function ImageModeSection({
                 items={[
                   {
                     title: "作用",
-                    body: <>作为当前项目官方图片生成、编辑、放大请求的默认模型名；未单独覆盖时会优先用这里。</>,
+                    body: <>作为当前项目官方图片生成、编辑请求的默认模型名；未单独覆盖时会优先用这里。</>,
                   },
                   {
                     title: "常见值",
@@ -388,6 +426,18 @@ export function ImageModeSection({
       <ConfigSection
         title="CPA 配置"
         description="图片请求读取 [cpa].base_url / [cpa].api_key；CPA 管理同步读取 [sync].base_url / [sync].management_key。若 [cpa].base_url 留空，会自动回退使用 [sync].base_url。"
+        actions={
+          <Button
+            type="button"
+            variant="outline"
+            className="h-10 rounded-full border-stone-200 bg-white px-4 text-stone-700 shadow-none"
+            onClick={() => void handleTestCPA()}
+            disabled={isTestingCPA}
+          >
+            {isTestingCPA ? <LoaderCircle className="size-4 animate-spin" /> : <Link2 className="size-4" />}
+            测试连接
+          </Button>
+        }
       >
         <Field
           label="当前生效 CPA 图片地址"

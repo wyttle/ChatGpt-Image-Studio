@@ -20,6 +20,7 @@ import (
 	"chatgpt2api/internal/buildinfo"
 	"chatgpt2api/internal/cliproxy"
 	"chatgpt2api/internal/config"
+	"chatgpt2api/internal/configstore"
 )
 
 func main() {
@@ -44,6 +45,22 @@ func main() {
 			fmt.Sprintf("请检查 %s 是否是有效的 TOML 文件", paths.Override),
 			fmt.Sprintf("参考示例配置：%s", paths.Defaults),
 		)
+	}
+	if err := applyEnvConfigOverrides(cfg); err != nil {
+		fatalStartup(logger, paths, "读取环境变量配置失败", err)
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Storage.ConfigBackend), "redis") {
+		loadCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := loadRedisConfigOverrides(loadCtx, cfg); err != nil {
+			cancel()
+			fatalStartup(logger, paths, "读取 Redis 配置失败", err,
+				"当前 storage.config_backend=redis，必须先确保 Redis 可连接",
+			)
+		}
+		cancel()
+		if err := applyEnvConfigOverrides(cfg); err != nil {
+			fatalStartup(logger, paths, "应用环境变量配置失败", err)
+		}
 	}
 	cfg.App.Version = buildinfo.ResolveVersion(cfg.App.Version)
 
@@ -128,6 +145,88 @@ func envInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func applyEnvConfigOverrides(cfg *config.Config) error {
+	overrides := map[string]map[string]any{}
+	put := func(section, key string, value any) {
+		if _, ok := overrides[section]; !ok {
+			overrides[section] = map[string]any{}
+		}
+		overrides[section][key] = value
+	}
+	putString := func(envKey, section, key string) {
+		if value := os.Getenv(envKey); strings.TrimSpace(value) != "" {
+			put(section, key, value)
+		}
+	}
+	putInt := func(envKey, section, key string) {
+		if value := os.Getenv(envKey); strings.TrimSpace(value) != "" {
+			if parsed, err := strconv.Atoi(value); err == nil {
+				put(section, key, parsed)
+			}
+		}
+	}
+
+	putString("APP_AUTH_KEY", "app", "auth_key")
+	putString("APP_API_KEY", "app", "api_key")
+	putString("STORAGE_BACKEND", "storage", "backend")
+	putString("STORAGE_CONFIG_BACKEND", "storage", "config_backend")
+	putString("STORAGE_IMAGE_STORAGE", "storage", "image_storage")
+	putString("STORAGE_IMAGE_CONVERSATION_STORAGE", "storage", "image_conversation_storage")
+	putString("STORAGE_IMAGE_DATA_STORAGE", "storage", "image_data_storage")
+	putString("STORAGE_IMAGE_DIR", "storage", "image_dir")
+	putString("STORAGE_SQLITE_PATH", "storage", "sqlite_path")
+	putString("REDIS_ADDR", "storage", "redis_addr")
+	putString("REDIS_PASSWORD", "storage", "redis_password")
+	putInt("REDIS_DB", "storage", "redis_db")
+	putString("REDIS_PREFIX", "storage", "redis_prefix")
+	putString("CHATGPT_IMAGE_MODE", "chatgpt", "image_mode")
+	putString("CHATGPT_FREE_IMAGE_ROUTE", "chatgpt", "free_image_route")
+	putString("CHATGPT_FREE_IMAGE_MODEL", "chatgpt", "free_image_model")
+	putString("CHATGPT_PAID_IMAGE_ROUTE", "chatgpt", "paid_image_route")
+	putString("CHATGPT_PAID_IMAGE_MODEL", "chatgpt", "paid_image_model")
+	putInt("CHATGPT_REQUEST_TIMEOUT", "chatgpt", "request_timeout")
+	putInt("CHATGPT_SSE_TIMEOUT", "chatgpt", "sse_timeout")
+	putString("CPA_BASE_URL", "cpa", "base_url")
+	putString("CPA_API_KEY", "cpa", "api_key")
+	putString("CPA_ROUTE_STRATEGY", "cpa", "route_strategy")
+	putString("NEWAPI_BASE_URL", "newapi", "base_url")
+	putString("NEWAPI_USERNAME", "newapi", "username")
+	putString("NEWAPI_PASSWORD", "newapi", "password")
+	putString("NEWAPI_ACCESS_TOKEN", "newapi", "access_token")
+	putInt("NEWAPI_USER_ID", "newapi", "user_id")
+	putString("SUB2API_BASE_URL", "sub2api", "base_url")
+	putString("SUB2API_EMAIL", "sub2api", "email")
+	putString("SUB2API_PASSWORD", "sub2api", "password")
+	putString("SUB2API_API_KEY", "sub2api", "api_key")
+	putString("SUB2API_GROUP_ID", "sub2api", "group_id")
+
+	if len(overrides) == 0 {
+		return nil
+	}
+	return cfg.ApplyOverrides(overrides)
+}
+
+func loadRedisConfigOverrides(ctx context.Context, cfg *config.Config) error {
+	store := configstore.NewRedis(
+		cfg.Storage.RedisAddr,
+		cfg.Storage.RedisPassword,
+		cfg.Storage.RedisDB,
+		cfg.Storage.RedisPrefix,
+	)
+	defer store.Close()
+	if err := store.Ping(ctx); err != nil {
+		return err
+	}
+	values, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	return cfg.ApplyOverrides(values)
 }
 
 func max(a, b int) int {

@@ -115,12 +115,18 @@ func TestCPAImageClientEditUsesCodexResponsesMaskField(t *testing.T) {
 	defer server.Close()
 
 	client := newCPAImageClient(server.URL, "test-key", 30*time.Second, "codex_responses")
-	_, err := client.EditImageByUpload(context.Background(), "edit cat", cpaFixedImageModel, [][]byte{[]byte("source-image")}, []byte("mask-image"))
+	_, err := client.EditImageByUpload(context.Background(), "edit cat", cpaFixedImageModel, [][]byte{[]byte("source-image")}, []byte("mask-image"), "1536x1024", "high")
 	if err != nil {
 		t.Fatalf("EditImageByUpload() returned error: %v", err)
 	}
 	if got := seenTool["action"]; got != "edit" {
 		t.Fatalf("tool.action = %v, want %q", got, "edit")
+	}
+	if got := seenTool["size"]; got != "1536x1024" {
+		t.Fatalf("tool.size = %v, want %q", got, "1536x1024")
+	}
+	if got := seenTool["quality"]; got != "high" {
+		t.Fatalf("tool.quality = %v, want %q", got, "high")
 	}
 	maskField, ok := seenTool["input_image_mask"].(map[string]any)
 	if !ok {

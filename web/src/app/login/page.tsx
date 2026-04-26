@@ -53,7 +53,7 @@ export default function LoginPage() {
             <div className="space-y-3">
               <div className="text-sm font-medium uppercase tracking-[0.24em] text-white/55">Image Studio</div>
               <h1 className="max-w-[420px] text-[40px] font-semibold leading-[1.1] tracking-tight">
-                在一个界面里完成生成、编辑、放大与账号调度。
+                在一个界面里完成生成、编辑与账号调度。
               </h1>
               <p className="max-w-[430px] text-sm leading-7 text-white/72">
                 登录后直接进入图片工作台。最近任务、选区编辑、额度信息和账号同步都会保持在同一套工作流里。

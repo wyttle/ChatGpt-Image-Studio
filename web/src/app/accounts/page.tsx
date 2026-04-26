@@ -43,25 +43,31 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  createAccounts,
   deleteAccounts,
+  fetchAccountRefreshProgress,
   fetchAccountQuota,
   fetchAccounts,
+  fetchConfig,
   fetchSyncStatus,
   importAccountFiles,
+  refreshAllAccounts,
   refreshAccounts,
   runSync,
   updateAccount,
   type AccountImportResponse,
   type Account,
+  type AccountRefreshProgress,
   type AccountQuotaResponse,
+  type AccountSourceKind,
   type AccountStatus,
+  type SyncSource,
   type AccountType,
-  type SyncAccount,
   type SyncStatus,
   type SyncStatusResponse,
 } from "@/lib/api";
-import { getCachedSyncStatus, setCachedSyncStatus } from "@/store/sync-status-cache";
 import { cn } from "@/lib/utils";
+import { Textarea } from "@/components/ui/textarea";
 
 const accountTypeOptions: { label: string; value: AccountType | "all" }[] = [
   { label: "全部类型", value: "all" },
@@ -71,13 +77,14 @@ const accountTypeOptions: { label: string; value: AccountType | "all" }[] = [
   { label: "Pro", value: "Pro" },
 ];
 
-const accountStatusOptions: { label: string; value: AccountStatus | "all" }[] = [
-  { label: "全部状态", value: "all" },
-  { label: "正常", value: "正常" },
-  { label: "限流", value: "限流" },
-  { label: "异常", value: "异常" },
-  { label: "禁用", value: "禁用" },
-];
+const accountStatusOptions: { label: string; value: AccountStatus | "all" }[] =
+  [
+    { label: "全部状态", value: "all" },
+    { label: "正常", value: "正常" },
+    { label: "限流", value: "限流" },
+    { label: "异常", value: "异常" },
+    { label: "禁用", value: "禁用" },
+  ];
 
 const statusMeta: Record<
   AccountStatus,
@@ -107,12 +114,46 @@ const syncMeta: Record<
 
 const metricCards = [
   { key: "total", label: "账户总数", color: "text-stone-900", icon: UserRound },
-  { key: "active", label: "正常账户", color: "text-emerald-600", icon: CheckCircle2 },
-  { key: "limited", label: "限流账户", color: "text-orange-500", icon: CircleAlert },
-  { key: "abnormal", label: "异常账户", color: "text-rose-500", icon: CircleOff },
+  { key: "authFile", label: "认证文件", color: "text-sky-600", icon: FileUp },
+  { key: "token", label: "Token", color: "text-violet-600", icon: Shield },
+  {
+    key: "active",
+    label: "正常账户",
+    color: "text-emerald-600",
+    icon: CheckCircle2,
+  },
+  {
+    key: "limited",
+    label: "限流账户",
+    color: "text-orange-500",
+    icon: CircleAlert,
+  },
+  {
+    key: "abnormal",
+    label: "异常账户",
+    color: "text-rose-500",
+    icon: CircleOff,
+  },
   { key: "disabled", label: "禁用账户", color: "text-stone-500", icon: Ban },
   { key: "quota", label: "剩余额度", color: "text-blue-500", icon: RefreshCw },
 ] as const;
+
+const sourceKindMeta: Record<
+  AccountSourceKind,
+  {
+    label: string;
+    badge: ComponentProps<typeof Badge>["variant"];
+  }
+> = {
+  auth_file: { label: "认证文件", badge: "secondary" },
+  token: { label: "Token", badge: "info" },
+};
+
+const syncSourceOptions: Array<{ label: string; value: SyncSource }> = [
+  { label: "CPA", value: "cpa" },
+  { label: "NewAPI", value: "newapi" },
+  { label: "Sub2API", value: "sub2api" },
+];
 
 function formatCompact(value: number) {
   if (value >= 1000) {
@@ -151,7 +192,9 @@ function formatRestoreAt(value?: string | null) {
 }
 
 function formatQuotaSummary(accounts: Account[]) {
-  return formatCompact(accounts.reduce((sum, account) => sum + Math.max(0, account.quota), 0));
+  return formatCompact(
+    accounts.reduce((sum, account) => sum + Math.max(0, account.quota), 0),
+  );
 }
 
 function maskToken(token?: string) {
@@ -163,11 +206,26 @@ function maskToken(token?: string) {
 function normalizeAccounts(items: Account[]): Account[] {
   return items.map((item) => ({
     ...item,
+    sourceKind: item.sourceKind === "token" ? "token" : "auth_file",
     type:
-      item.type === "Plus" || item.type === "Team" || item.type === "Pro" || item.type === "Free"
+      item.type === "Plus" ||
+      item.type === "Team" ||
+      item.type === "Pro" ||
+      item.type === "Free"
         ? item.type
         : "Free",
   }));
+}
+
+function parseTokenInput(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\s,]+/g)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
 }
 
 function buildImportSummary(data: AccountImportResponse) {
@@ -179,9 +237,12 @@ function buildImportSummary(data: AccountImportResponse) {
 }
 
 function extractImageGenLimit(account: Account) {
-  const imageGen = account.limits_progress?.find((item) => item.feature_name === "image_gen");
+  const imageGen = account.limits_progress?.find(
+    (item) => item.feature_name === "image_gen",
+  );
   return {
-    remaining: typeof imageGen?.remaining === "number" ? imageGen.remaining : null,
+    remaining:
+      typeof imageGen?.remaining === "number" ? imageGen.remaining : null,
     resetAfter: imageGen?.reset_after || account.restoreAt || null,
   };
 }
@@ -192,7 +253,9 @@ function mergeImageGenLimit(
   resetAfter: string | null | undefined,
 ) {
   const next = Array.isArray(limitsProgress) ? [...limitsProgress] : [];
-  const currentIndex = next.findIndex((item) => item.feature_name === "image_gen");
+  const currentIndex = next.findIndex(
+    (item) => item.feature_name === "image_gen",
+  );
   const nextItem = {
     feature_name: "image_gen",
     remaining: typeof remaining === "number" ? remaining : undefined,
@@ -211,31 +274,38 @@ function mergeImageGenLimit(
   return next;
 }
 
-function applyQuotaResultToAccount(account: Account, quota: AccountQuotaResponse): Account {
+function applyQuotaResultToAccount(
+  account: Account,
+  quota: AccountQuotaResponse,
+): Account {
   return {
     ...account,
     status: quota.status,
     type: quota.type,
     quota: quota.quota,
     restoreAt: quota.image_gen_reset_after || account.restoreAt,
-    limits_progress: mergeImageGenLimit(account.limits_progress, quota.image_gen_remaining, quota.image_gen_reset_after),
+    limits_progress: mergeImageGenLimit(
+      account.limits_progress,
+      quota.image_gen_remaining,
+      quota.image_gen_reset_after,
+    ),
   };
 }
 
 function normalizeSyncStatus(payload: SyncStatusResponse | null) {
   return {
+    source: payload?.source ?? "cpa",
+    label: payload?.label ?? "CPA",
     configured: payload?.configured ?? false,
+    pullSupported: payload?.pullSupported ?? true,
+    pushSupported: payload?.pushSupported ?? true,
     local: payload?.local ?? 0,
     remote: payload?.remote ?? 0,
-    accounts: payload?.accounts ?? [],
-    disabledMismatch: payload?.disabledMismatch ?? 0,
+    pendingPush: payload?.pendingPush ?? 0,
+    pendingPull: payload?.pendingPull ?? 0,
+    inaccessibleRemote: payload?.inaccessibleRemote ?? 0,
+    notes: payload?.notes ?? [],
     lastRun: payload?.lastRun ?? null,
-    summary: {
-      synced: payload?.summary?.synced ?? 0,
-      pending_upload: payload?.summary?.pending_upload ?? 0,
-      remote_only: payload?.summary?.remote_only ?? 0,
-      remote_deleted: payload?.summary?.remote_deleted ?? 0,
-    } satisfies Record<SyncStatus, number>,
   };
 }
 
@@ -246,7 +316,9 @@ export default function AccountsPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<AccountType | "all">("all");
-  const [statusFilter, setStatusFilter] = useState<AccountStatus | "all">("all");
+  const [statusFilter, setStatusFilter] = useState<AccountStatus | "all">(
+    "all",
+  );
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState("10");
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
@@ -258,11 +330,24 @@ export default function AccountsPage() {
   const [isImporting, setIsImporting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
-  const [quotaRefreshingId, setQuotaRefreshingId] = useState<string | null>(null);
-  const [accountQuotaMap, setAccountQuotaMap] = useState<Record<string, AccountQuotaResponse>>({});
+  const [quotaRefreshingId, setQuotaRefreshingId] = useState<string | null>(
+    null,
+  );
+  const [accountQuotaMap, setAccountQuotaMap] = useState<
+    Record<string, AccountQuotaResponse>
+  >({});
   const [syncStatus, setSyncStatus] = useState<SyncStatusResponse | null>(null);
+  const [syncSource, setSyncSource] = useState<SyncSource>("cpa");
   const [isSyncLoading, setIsSyncLoading] = useState(true);
-  const [syncRunningDirection, setSyncRunningDirection] = useState<"pull" | "push" | null>(null);
+  const [syncRunningDirection, setSyncRunningDirection] = useState<
+    "pull" | "push" | null
+  >(null);
+  const [imageMode, setImageMode] = useState<"studio" | "cpa" | null>(null);
+  const [isTokenDialogOpen, setIsTokenDialogOpen] = useState(false);
+  const [tokenInput, setTokenInput] = useState("");
+  const [isTokenImporting, setIsTokenImporting] = useState(false);
+  const [refreshAllRun, setRefreshAllRun] =
+    useState<AccountRefreshProgress | null>(null);
 
   const loadAccounts = async (silent = false) => {
     if (!silent) {
@@ -272,9 +357,15 @@ export default function AccountsPage() {
       const data = await fetchAccounts();
       setAccounts(normalizeAccounts(data.items));
       setAccountQuotaMap((prev) =>
-        Object.fromEntries(Object.entries(prev).filter(([id]) => data.items.some((item) => item.id === id))),
+        Object.fromEntries(
+          Object.entries(prev).filter(([id]) =>
+            data.items.some((item) => item.id === id),
+          ),
+        ),
       );
-      setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.id === id)));
+      setSelectedIds((prev) =>
+        prev.filter((id) => data.items.some((item) => item.id === id)),
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "加载账户失败";
       toast.error(message);
@@ -285,37 +376,41 @@ export default function AccountsPage() {
     }
   };
 
-  const loadSync = async ({
-    silent = false,
-    force = false,
-    revalidate = false,
-    suppressError = false,
-  }: {
-    silent?: boolean;
-    force?: boolean;
-    revalidate?: boolean;
-    suppressError?: boolean;
-  } = {}) => {
-    const cachedStatus = getCachedSyncStatus();
-    if (!silent && !force && cachedStatus) {
-      setSyncStatus(cachedStatus);
-      setIsSyncLoading(false);
-      if (revalidate) {
-        void loadSync({ silent: true, force: true, suppressError: true });
-      }
-      return;
-    }
-
+  const loadSync = async (
+    source: SyncSource,
+    {
+      silent = false,
+      suppressError = false,
+      progressOnly = false,
+    }: {
+      silent?: boolean;
+      suppressError?: boolean;
+      progressOnly?: boolean;
+    } = {},
+  ) => {
     if (!silent) {
       setIsSyncLoading(true);
     }
     try {
-      const data = await fetchSyncStatus();
-      setCachedSyncStatus(data);
-      setSyncStatus(data);
+      const data = await fetchSyncStatus(source, { progressOnly });
+      setSyncStatus((prev) => {
+        if (!progressOnly) {
+          return data;
+        }
+        if (!prev) {
+          return data;
+        }
+        return {
+          ...prev,
+          source: data.source || prev.source,
+          label: data.label || prev.label,
+          lastRun: data.lastRun ?? prev.lastRun,
+        };
+      });
     } catch (error) {
       if (!suppressError) {
-        const message = error instanceof Error ? error.message : "读取同步状态失败";
+        const message =
+          error instanceof Error ? error.message : "读取同步状态失败";
         toast.error(message);
       }
     } finally {
@@ -325,14 +420,101 @@ export default function AccountsPage() {
     }
   };
 
+  const loadRuntimeConfig = async () => {
+    try {
+      const data = await fetchConfig();
+      setImageMode(data.chatgpt.imageMode);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "读取运行配置失败";
+      toast.error(message);
+    }
+  };
+
+  const loadRefreshAllProgress = async () => {
+    try {
+      const data = await fetchAccountRefreshProgress();
+      setRefreshAllRun(data.progress ?? null);
+    } catch {
+      // 页面首次加载时忽略批量刷新进度读取失败，避免遮盖主流程。
+    }
+  };
+
   useEffect(() => {
     if (didLoadRef.current) {
       return;
     }
     didLoadRef.current = true;
-    void Promise.all([loadAccounts(), loadSync({ revalidate: true })]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void Promise.all([
+      loadAccounts(),
+      loadSync("cpa"),
+      loadRuntimeConfig(),
+      loadRefreshAllProgress(),
+    ]);
   }, []);
+
+  useEffect(() => {
+    if (!didLoadRef.current) {
+      return;
+    }
+    void loadSync(syncSource, { silent: false, suppressError: false });
+  }, [syncSource]);
+
+  useEffect(() => {
+    if (!didLoadRef.current) {
+      return;
+    }
+    if (!refreshAllRun?.running) {
+      return;
+    }
+
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const tick = async () => {
+      if (cancelled) {
+        return;
+      }
+      try {
+        const data = await fetchAccountRefreshProgress();
+        if (cancelled) {
+          return;
+        }
+        setRefreshAllRun(data.progress ?? null);
+        if (data.progress && !data.progress.running) {
+          await loadAccounts(true);
+          if (data.progress.error) {
+            toast.error(data.progress.error);
+          } else if (data.progress.failed > 0) {
+            toast.error(
+              `批量刷新完成，成功 ${data.progress.refreshed} 个，失败 ${data.progress.failed} 个`,
+            );
+          } else {
+            toast.success(
+              `批量刷新完成，共刷新 ${data.progress.refreshed} 个账户`,
+            );
+          }
+          return;
+        }
+      } catch (error) {
+        if (!cancelled) {
+          const message =
+            error instanceof Error ? error.message : "读取批量刷新进度失败";
+          toast.error(message);
+        }
+        return;
+      }
+      timer = window.setTimeout(tick, 900);
+    };
+
+    timer = window.setTimeout(tick, 400);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [refreshAllRun?.running]);
 
   const filteredAccounts = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -343,46 +525,145 @@ export default function AccountsPage() {
         (account.fileName ?? "").toLowerCase().includes(normalizedQuery) ||
         (account.note ?? "").toLowerCase().includes(normalizedQuery);
       const typeMatched = typeFilter === "all" || account.type === typeFilter;
-      const statusMatched = statusFilter === "all" || account.status === statusFilter;
+      const statusMatched =
+        statusFilter === "all" || account.status === statusFilter;
       return searchMatched && typeMatched && statusMatched;
     });
   }, [accounts, query, statusFilter, typeFilter]);
 
-  const pageCount = Math.max(1, Math.ceil(filteredAccounts.length / Number(pageSize)));
+  const pageCount = Math.max(
+    1,
+    Math.ceil(filteredAccounts.length / Number(pageSize)),
+  );
   const safePage = Math.min(page, pageCount);
   const startIndex = (safePage - 1) * Number(pageSize);
-  const currentRows = filteredAccounts.slice(startIndex, startIndex + Number(pageSize));
+  const currentRows = filteredAccounts.slice(
+    startIndex,
+    startIndex + Number(pageSize),
+  );
   const allCurrentSelected =
-    currentRows.length > 0 && currentRows.every((row) => selectedIds.includes(row.id));
+    currentRows.length > 0 &&
+    currentRows.every((row) => selectedIds.includes(row.id));
 
   const summary = useMemo(() => {
     const total = accounts.length;
+    const authFile = accounts.filter(
+      (item) => item.sourceKind !== "token",
+    ).length;
+    const token = accounts.filter((item) => item.sourceKind === "token").length;
     const active = accounts.filter((item) => item.status === "正常").length;
     const limited = accounts.filter((item) => item.status === "限流").length;
     const abnormal = accounts.filter((item) => item.status === "异常").length;
     const disabled = accounts.filter((item) => item.status === "禁用").length;
     const quota = formatQuotaSummary(accounts);
 
-    return { total, active, limited, abnormal, disabled, quota };
+    return {
+      total,
+      authFile,
+      token,
+      active,
+      limited,
+      abnormal,
+      disabled,
+      quota,
+    };
   }, [accounts]);
 
   const selectedTokens = useMemo(() => {
     const selectedSet = new Set(selectedIds);
-    return accounts.filter((item) => selectedSet.has(item.id)).map((item) => item.access_token);
+    return accounts
+      .filter((item) => selectedSet.has(item.id))
+      .map((item) => item.access_token);
   }, [accounts, selectedIds]);
 
   const abnormalTokens = useMemo(() => {
-    return accounts.filter((item) => item.status === "异常").map((item) => item.access_token);
+    return accounts
+      .filter((item) => item.status === "异常")
+      .map((item) => item.access_token);
   }, [accounts]);
 
   const syncView = useMemo(() => normalizeSyncStatus(syncStatus), [syncStatus]);
+  const selectedSyncSourceLabel = useMemo(
+    () =>
+      syncSourceOptions.find((option) => option.value === syncSource)?.label ??
+      syncView.label,
+    [syncSource, syncView.label],
+  );
+  const syncProgress = syncView.lastRun;
+  const syncIsRunning = Boolean(syncRunningDirection || syncProgress?.running);
+  const refreshAllRunning = Boolean(refreshAllRun?.running);
+  const refreshAllPercent =
+    refreshAllRun && refreshAllRun.total > 0
+      ? Math.max(
+          0,
+          Math.min(
+            100,
+            Math.round((refreshAllRun.processed / refreshAllRun.total) * 100),
+          ),
+        )
+      : 0;
+  const isStudioMode = imageMode === "studio";
+  const syncProgressTotal = Math.max(
+    syncProgress?.total ?? 0,
+    syncProgress?.processed ?? 0,
+    0,
+  );
+  const syncProcessedValue = syncProgress?.processed ?? 0;
+  const syncProgressProcessed = Math.min(
+    syncProcessedValue,
+    syncProgressTotal > 0 ? syncProgressTotal : syncProcessedValue,
+  );
+  const syncProgressPercent =
+    syncProgressTotal > 0
+      ? Math.max(
+          0,
+          Math.min(
+            100,
+            Math.round((syncProgressProcessed / syncProgressTotal) * 100),
+          ),
+        )
+      : 0;
+  const syncActiveLabel = useMemo(() => {
+    const direction = syncRunningDirection ?? syncProgress?.direction;
+    return direction === "pull"
+      ? `正在从${selectedSyncSourceLabel}同步`
+      : `正在推送至${selectedSyncSourceLabel}`;
+  }, [selectedSyncSourceLabel, syncProgress?.direction, syncRunningDirection]);
 
-  const syncMap = useMemo(() => {
-    return syncView.accounts.reduce<Record<string, SyncAccount>>((acc, item) => {
-      acc[item.name] = item;
-      return acc;
-    }, {});
-  }, [syncView.accounts]);
+  useEffect(() => {
+    if (!didLoadRef.current) {
+      return;
+    }
+    if (!(syncRunningDirection !== null || syncView.lastRun?.running)) {
+      return;
+    }
+
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const tick = async () => {
+      if (cancelled) {
+        return;
+      }
+      await loadSync(syncSource, {
+        silent: true,
+        suppressError: true,
+        progressOnly: true,
+      });
+      if (cancelled) {
+        return;
+      }
+      timer = window.setTimeout(tick, 900);
+    };
+
+    timer = window.setTimeout(tick, 400);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [syncRunningDirection, syncSource, syncView.lastRun?.running]);
 
   const paginationItems = useMemo(() => {
     const items: (number | "...")[] = [];
@@ -408,23 +689,68 @@ export default function AccountsPage() {
     try {
       const data = await importAccountFiles(normalizedFiles);
       setAccounts(normalizeAccounts(data.items));
-      setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.id === id)));
+      setSelectedIds((prev) =>
+        prev.filter((id) => data.items.some((item) => item.id === id)),
+      );
       setPage(1);
-      await loadSync({ silent: true, force: true });
+      await loadSync(syncSource, { silent: true });
 
       const failedMessage = data.failed?.[0]?.error;
       if ((data.failed?.length ?? 0) > 0) {
-        toast.error(`${buildImportSummary(data)}${failedMessage ? `，首个错误：${failedMessage}` : ""}`);
+        toast.error(
+          `${buildImportSummary(data)}${failedMessage ? `，首个错误：${failedMessage}` : ""}`,
+        );
       } else if ((data.duplicates?.length ?? 0) > 0) {
         toast.success(`${buildImportSummary(data)}。重复文件已跳过`);
       } else {
         toast.success(buildImportSummary(data));
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "导入认证文件失败";
+      const message =
+        error instanceof Error ? error.message : "导入认证文件失败";
       toast.error(message);
     } finally {
       setIsImporting(false);
+    }
+  };
+
+  const handleImportTokens = async () => {
+    const tokens = parseTokenInput(tokenInput);
+    if (tokens.length === 0) {
+      toast.error("请先输入至少一个 access_token");
+      return;
+    }
+
+    setIsTokenImporting(true);
+    try {
+      const data = await createAccounts(tokens);
+      setAccounts(normalizeAccounts(data.items));
+      setSelectedIds((prev) =>
+        prev.filter((id) => data.items.some((item) => item.id === id)),
+      );
+      setTokenInput("");
+      setIsTokenDialogOpen(false);
+      setPage(1);
+      await loadSync(syncSource, { silent: true });
+
+      if (data.errors?.length) {
+        const firstError = data.errors[0]?.error;
+        toast.error(
+          `导入 ${data.added ?? 0} 个，刷新 ${data.refreshed ?? 0} 个，重复 ${data.skipped ?? 0} 个${
+            firstError ? `，首个错误：${firstError}` : ""
+          }`,
+        );
+      } else {
+        toast.success(
+          `导入 ${data.added ?? 0} 个 Token，刷新 ${data.refreshed ?? 0} 个，重复 ${data.skipped ?? 0} 个`,
+        );
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "导入 Token 失败";
+      toast.error(message);
+    } finally {
+      setIsTokenImporting(false);
     }
   };
 
@@ -438,8 +764,10 @@ export default function AccountsPage() {
     try {
       const data = await deleteAccounts(tokens);
       setAccounts(normalizeAccounts(data.items));
-      setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.id === id)));
-      await loadSync({ silent: true, force: true });
+      setSelectedIds((prev) =>
+        prev.filter((id) => data.items.some((item) => item.id === id)),
+      );
+      await loadSync(syncSource, { silent: true });
       toast.success(`删除 ${data.removed ?? 0} 个账户`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "删除账户失败";
@@ -459,7 +787,9 @@ export default function AccountsPage() {
     try {
       const data = await refreshAccounts(accessTokens);
       setAccounts(normalizeAccounts(data.items));
-      setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.id === id)));
+      setSelectedIds((prev) =>
+        prev.filter((id) => data.items.some((item) => item.id === id)),
+      );
       if (data.errors.length > 0) {
         const firstError = data.errors[0]?.error;
         toast.error(
@@ -476,6 +806,31 @@ export default function AccountsPage() {
     }
   };
 
+  const handleRefreshAllAccounts = async () => {
+    if (accounts.length === 0) {
+      toast.error("当前没有可刷新的账户");
+      return;
+    }
+    if (refreshAllRunning || isRefreshing || quotaRefreshingId !== null) {
+      toast.error("请等待当前刷新任务完成");
+      return;
+    }
+
+    try {
+      const data = await refreshAllAccounts();
+      setRefreshAllRun(data.progress ?? null);
+      if (data.alreadyRunning) {
+        toast.success("批量刷新任务已在进行中");
+      } else {
+        toast.success("已开始按批次刷新所有账户额度");
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "启动批量刷新失败";
+      toast.error(message);
+    }
+  };
+
   const handleRefreshAccountQuota = async (account: Account) => {
     setQuotaRefreshingId(account.id);
     try {
@@ -484,17 +839,24 @@ export default function AccountsPage() {
         ...prev,
         [account.id]: data,
       }));
-      setAccounts((prev) => prev.map((item) => (item.id === account.id ? applyQuotaResultToAccount(item, data) : item)));
+      setAccounts((prev) =>
+        prev.map((item) =>
+          item.id === account.id ? applyQuotaResultToAccount(item, data) : item,
+        ),
+      );
 
       if (data.refresh_error) {
         toast.error(data.refresh_error);
         return;
       }
       const remainingText =
-        typeof data.image_gen_remaining === "number" ? `${data.image_gen_remaining}` : "—";
+        typeof data.image_gen_remaining === "number"
+          ? `${data.image_gen_remaining}`
+          : "—";
       toast.success(`图片额度已刷新，剩余 ${remainingText}`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "刷新图片额度失败";
+      const message =
+        error instanceof Error ? error.message : "刷新图片额度失败";
       toast.error(message);
     } finally {
       setQuotaRefreshingId(null);
@@ -503,13 +865,34 @@ export default function AccountsPage() {
 
   const handleRunSync = async (direction: "pull" | "push") => {
     setSyncRunningDirection(direction);
+    void loadSync(syncSource, {
+      silent: true,
+      suppressError: true,
+      progressOnly: true,
+    });
     try {
-      const data = await runSync(direction);
+      const data = await runSync(direction, syncSource);
       if (data.status) {
-        setCachedSyncStatus(data.status);
         setSyncStatus(data.status);
       } else {
-        await loadSync({ silent: true, force: true });
+        setSyncStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                lastRun: data.result,
+              }
+            : {
+                ...normalizeSyncStatus(null),
+                source: syncSource,
+                label: selectedSyncSourceLabel,
+                lastRun: data.result,
+              },
+        );
+        await loadSync(syncSource, {
+          silent: true,
+          suppressError: true,
+          progressOnly: false,
+        });
       }
       const result = data.result;
       if (!result.ok && result.error) {
@@ -517,9 +900,13 @@ export default function AccountsPage() {
         return;
       }
       if (direction === "pull") {
-        toast.success(`从 CPA 同步完成：拉取 ${result.downloaded} 个账号，状态对齐 ${result.disabled_aligned}`);
+        toast.success(
+          `从 ${selectedSyncSourceLabel} 同步完成：导入 ${result.imported} 个，跳过 ${result.skipped} 个，失败 ${result.failed} 个`,
+        );
       } else {
-        toast.success(`同步至 CPA 完成：推送 ${result.uploaded} 个账号，状态对齐 ${result.disabled_aligned}`);
+        toast.success(
+          `推送至 ${selectedSyncSourceLabel} 完成：导出 ${result.exported} 个，跳过 ${result.skipped} 个，失败 ${result.failed} 个`,
+        );
       }
       await loadAccounts(true);
     } catch (error) {
@@ -550,8 +937,10 @@ export default function AccountsPage() {
         quota: Number(editQuota || 0),
       });
       setAccounts(normalizeAccounts(data.items));
-    setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.id === id)));
-    setEditingAccount(null);
+      setSelectedIds((prev) =>
+        prev.filter((id) => data.items.some((item) => item.id === id)),
+      );
+      setEditingAccount(null);
       toast.success("账号信息已更新");
     } catch (error) {
       const message = error instanceof Error ? error.message : "更新账号失败";
@@ -563,10 +952,14 @@ export default function AccountsPage() {
 
   const toggleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedIds((prev) => Array.from(new Set([...prev, ...currentRows.map((item) => item.id)])));
+      setSelectedIds((prev) =>
+        Array.from(new Set([...prev, ...currentRows.map((item) => item.id)])),
+      );
       return;
     }
-    setSelectedIds((prev) => prev.filter((id) => !currentRows.some((row) => row.id === id)));
+    setSelectedIds((prev) =>
+      prev.filter((id) => !currentRows.some((row) => row.id === id)),
+    );
   };
 
   return (
@@ -577,7 +970,9 @@ export default function AccountsPage() {
             <Shield className="size-5" />
           </div>
           <div className="space-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight text-stone-950">号池管理</h1>
+            <h1 className="text-2xl font-semibold tracking-tight text-stone-950">
+              号池管理
+            </h1>
           </div>
         </div>
       </section>
@@ -594,7 +989,58 @@ export default function AccountsPage() {
         }}
       />
 
-      <Dialog open={Boolean(editingAccount)} onOpenChange={(open) => (!open ? setEditingAccount(null) : null)}>
+      <Dialog open={isTokenDialogOpen} onOpenChange={setIsTokenDialogOpen}>
+        <DialogContent className="rounded-2xl p-6 sm:max-w-[640px]">
+          <DialogHeader className="gap-2">
+            <DialogTitle>导入 Token</DialogTitle>
+            <DialogDescription className="text-sm leading-6">
+              仅 Studio 模式可用。支持一次粘贴多个
+              `access_token`，按换行、空格或逗号分隔。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Textarea
+              value={tokenInput}
+              onChange={(event) => setTokenInput(event.target.value)}
+              placeholder="粘贴一个或多个 access_token"
+              className="min-h-[180px] rounded-xl border-stone-200 bg-white text-sm leading-6"
+            />
+            <div className="text-xs leading-5 text-stone-500">
+              Token 账号会与认证文件账号分开统计，不参与 CPA / NewAPI / Sub2API
+              的同步和推送，实际出图前会先校验有效性。
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-10 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
+              onClick={() => setIsTokenDialogOpen(false)}
+              disabled={isTokenImporting}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              className="h-10 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800"
+              onClick={() => void handleImportTokens()}
+              disabled={isTokenImporting}
+            >
+              {isTokenImporting ? (
+                <LoaderCircle className="size-4 animate-spin" />
+              ) : (
+                <FileUp className="size-4" />
+              )}
+              导入 Token
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(editingAccount)}
+        onOpenChange={(open) => (!open ? setEditingAccount(null) : null)}
+      >
         <DialogContent showCloseButton={false} className="rounded-2xl p-6">
           <DialogHeader className="gap-2">
             <DialogTitle>编辑账户</DialogTitle>
@@ -605,7 +1051,10 @@ export default function AccountsPage() {
           <div className="space-y-4">
             <div className="space-y-2">
               <label className="text-sm font-medium text-stone-700">状态</label>
-              <Select value={editStatus} onValueChange={(value) => setEditStatus(value as AccountStatus)}>
+              <Select
+                value={editStatus}
+                onValueChange={(value) => setEditStatus(value as AccountStatus)}
+              >
                 <SelectTrigger className="h-11 rounded-xl border-stone-200 bg-white">
                   <SelectValue />
                 </SelectTrigger>
@@ -622,7 +1071,10 @@ export default function AccountsPage() {
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-stone-700">类型</label>
-              <Select value={editType} onValueChange={(value) => setEditType(value as AccountType)}>
+              <Select
+                value={editType}
+                onValueChange={(value) => setEditType(value as AccountType)}
+              >
                 <SelectTrigger className="h-11 rounded-xl border-stone-200 bg-white">
                   <SelectValue />
                 </SelectTrigger>
@@ -660,7 +1112,9 @@ export default function AccountsPage() {
               onClick={() => void handleUpdateAccount()}
               disabled={isUpdating}
             >
-              {isUpdating ? <LoaderCircle className="size-4 animate-spin" /> : null}
+              {isUpdating ? (
+                <LoaderCircle className="size-4 animate-spin" />
+              ) : null}
               保存修改
             </Button>
           </DialogFooter>
@@ -672,103 +1126,215 @@ export default function AccountsPage() {
           <CardContent className="space-y-4 p-5">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div className="space-y-1">
-                <h2 className="text-lg font-semibold tracking-tight">CPA 同步</h2>
-                <p className="text-sm text-stone-500">
-                  通过 `CLIProxyAPI /v0/management/auth-files` 双向同步本地 auth 文件。
-                </p>
+                <h2 className="text-lg font-semibold tracking-tight">
+                  {selectedSyncSourceLabel} 同步
+                </h2>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <Select
+                  value={syncSource}
+                  onValueChange={(value) => setSyncSource(value as SyncSource)}
+                  disabled={syncIsRunning}
+                >
+                  <SelectTrigger className="h-10 w-[140px] rounded-xl border-stone-200 bg-white px-3 text-stone-700">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {syncSourceOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Button
                   variant="outline"
                   className="h-10 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
-                  onClick={() => void loadSync({ force: true })}
-                  disabled={isSyncLoading || syncRunningDirection !== null}
+                  onClick={() => void loadSync(syncSource)}
+                  disabled={isSyncLoading || syncIsRunning}
                 >
-                  <RefreshCw className={cn("size-4", isSyncLoading ? "animate-spin" : "")} />
+                  <RefreshCw
+                    className={cn(
+                      "size-4",
+                      isSyncLoading ? "animate-spin" : "",
+                    )}
+                  />
                   刷新同步状态
                 </Button>
                 <Button
                   className="h-10 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800"
                   onClick={() => void handleRunSync("pull")}
-                  disabled={!syncView.configured || isSyncLoading || syncRunningDirection !== null}
+                  disabled={
+                    !syncView.configured ||
+                    !syncView.pullSupported ||
+                    isSyncLoading ||
+                    syncIsRunning
+                  }
                 >
-                  {syncRunningDirection === "pull" ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                  从 CPA 同步
+                  {syncRunningDirection === "pull" ? (
+                    <LoaderCircle className="size-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-4" />
+                  )}
+                  从{selectedSyncSourceLabel}同步
                 </Button>
                 <Button
                   className="h-10 rounded-xl bg-stone-900 px-4 text-white hover:bg-stone-800"
                   onClick={() => void handleRunSync("push")}
-                  disabled={!syncView.configured || isSyncLoading || syncRunningDirection !== null}
+                  disabled={
+                    !syncView.configured ||
+                    !syncView.pushSupported ||
+                    isSyncLoading ||
+                    syncIsRunning
+                  }
                 >
-                  {syncRunningDirection === "push" ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                  同步至 CPA
+                  {syncRunningDirection === "push" ? (
+                    <LoaderCircle className="size-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-4" />
+                  )}
+                  推送至{selectedSyncSourceLabel}
                 </Button>
               </div>
             </div>
 
             {isSyncLoading ? (
               <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-4 text-sm leading-6 text-stone-500">
-                正在读取 CPA 同步状态...
+                正在读取 {syncView.label} 同步状态...
               </div>
             ) : !syncView.configured ? (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-700">
-                后端还没有配置 CPA 同步。请前往
-                <Link to="/settings" className="mx-1 font-medium underline decoration-amber-400 underline-offset-4">
+                当前还没有配置 {syncView.label} 连接。请前往
+                <Link
+                  to="/settings"
+                  className="mx-1 font-medium underline decoration-amber-400 underline-offset-4"
+                >
                   配置管理
                 </Link>
-                开启 <code>sync.enabled = true</code>，并填写 <code>sync.base_url</code> 与{" "}
-                <code>sync.management_key</code>。
+                补齐对应来源的地址与鉴权信息后再试。
               </div>
             ) : (
               <>
-                <div className="grid gap-3 md:grid-cols-5">
-                  {([
-                    ["本地", syncView.local],
-                    ["远端", syncView.remote],
-                    ["待上传", syncView.summary.pending_upload],
-                    ["远端独有", syncView.summary.remote_only],
-                    ["远端已删", syncView.summary.remote_deleted],
-                  ] as const).map(([label, value]) => (
-                    <div key={label} className="rounded-2xl border border-stone-100 bg-stone-50 px-4 py-4">
-                      <div className="text-xs font-medium text-stone-400">{label}</div>
-                      <div className="mt-2 text-2xl font-semibold tracking-tight text-stone-900">{value}</div>
+                {syncIsRunning ? (
+                  <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 text-sm font-medium text-sky-800">
+                          <LoaderCircle className="size-4 animate-spin" />
+                          {syncActiveLabel}
+                        </div>
+                        <div className="text-xs leading-5 text-sky-700">
+                          {syncProgress?.phase
+                            ? `${syncProgress.phase}`
+                            : "正在准备同步任务"}
+                          {syncProgress?.current
+                            ? ` · 当前处理：${syncProgress.current}`
+                            : ""}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-sky-700">
+                        <Badge variant="info" className="rounded-lg px-3 py-1">
+                          已处理 {syncProgressProcessed}/
+                          {syncProgressTotal || "?"}
+                        </Badge>
+                        <Badge
+                          variant="success"
+                          className="rounded-lg px-3 py-1"
+                        >
+                          成功{" "}
+                          {(syncProgress?.imported ?? 0) +
+                            (syncProgress?.exported ?? 0)}
+                        </Badge>
+                        <Badge
+                          variant="warning"
+                          className="rounded-lg px-3 py-1"
+                        >
+                          跳过 {syncProgress?.skipped ?? 0}
+                        </Badge>
+                        <Badge
+                          variant="danger"
+                          className="rounded-lg px-3 py-1"
+                        >
+                          失败{" "}
+                          {(syncProgress?.failed ?? 0) +
+                            (syncProgress?.inaccessible ?? 0)}
+                        </Badge>
+                      </div>
+                    </div>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-sky-100">
+                      {syncProgressTotal > 0 ? (
+                        <div
+                          className="h-full rounded-full bg-sky-500 transition-[width] duration-300"
+                          style={{ width: `${syncProgressPercent}%` }}
+                        />
+                      ) : (
+                        <div className="h-full w-1/3 rounded-full bg-sky-500/80 animate-pulse" />
+                      )}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2 text-[11px] leading-5 text-sky-700">
+                      <span>导入 {syncProgress?.imported ?? 0}</span>
+                      <span>导出 {syncProgress?.exported ?? 0}</span>
+                      <span>不可直拉 {syncProgress?.inaccessible ?? 0}</span>
+                      {syncProgress?.updated_at ? (
+                        <span>
+                          最近更新{" "}
+                          {new Date(syncProgress.updated_at).toLocaleTimeString(
+                            "zh-CN",
+                          )}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="grid grid-cols-3 gap-2 md:grid-cols-5 md:gap-3">
+                  {(
+                    [
+                      ["本地", syncView.local],
+                      ["远端", syncView.remote],
+                      ["待推送", syncView.pendingPush],
+                      ["待拉取", syncView.pendingPull],
+                      ["无法直拉", syncView.inaccessibleRemote],
+                    ] as const
+                  ).map(([label, value]) => (
+                    <div
+                      key={label}
+                      className="rounded-2xl border border-stone-100 bg-stone-50 px-3 py-3 md:px-4 md:py-4"
+                    >
+                      <div className="text-xs font-medium text-stone-400">
+                        {label}
+                      </div>
+                      <div className="mt-1 text-xl font-semibold tracking-tight text-stone-900 md:mt-2 md:text-2xl">
+                        {value}
+                      </div>
                     </div>
                   ))}
                 </div>
 
                 <div className="flex flex-wrap gap-2">
-                  {syncView.disabledMismatch > 0 ? (
-                    <Badge variant="warning" className="rounded-lg px-3 py-1">
-                      状态不一致 {syncView.disabledMismatch}
+                  {syncView.notes.map((note) => (
+                    <Badge
+                      key={note}
+                      variant="warning"
+                      className="rounded-lg px-3 py-1"
+                    >
+                      {note}
                     </Badge>
-                  ) : null}
-                  {syncView.lastRun ? (
-                    <Badge variant={syncView.lastRun.ok ? "success" : "danger"} className="rounded-lg px-3 py-1">
-                      最近一次同步：{new Date(syncView.lastRun.finished_at).toLocaleString("zh-CN")}
+                  ))}
+                  {syncView.lastRun &&
+                  !syncView.lastRun.running &&
+                  syncView.lastRun.finished_at ? (
+                    <Badge
+                      variant={syncView.lastRun.ok ? "success" : "danger"}
+                      className="rounded-lg px-3 py-1"
+                    >
+                      最近一次操作：
+                      {new Date(syncView.lastRun.finished_at).toLocaleString(
+                        "zh-CN",
+                      )}
                     </Badge>
                   ) : null}
                 </div>
-
-                {syncView.accounts.length > 0 ? (
-                  <div className="rounded-2xl border border-stone-100 bg-stone-50 px-4 py-4">
-                    <div className="mb-3 text-sm font-medium text-stone-700">待处理文件</div>
-                    <div className="flex flex-wrap gap-2">
-                      {syncView.accounts
-                        .filter((item) => item.status !== "synced")
-                        .slice(0, 18)
-                        .map((item) => (
-                          <Badge key={item.name} variant={syncMeta[item.status].badge} className="rounded-lg px-3 py-1">
-                            {syncMeta[item.status].label} · {item.name}
-                          </Badge>
-                        ))}
-                      {syncView.accounts.filter((item) => item.status !== "synced").length === 0 ? (
-                        <Badge variant="success" className="rounded-lg px-3 py-1">
-                          当前没有待同步文件
-                        </Badge>
-                      ) : null}
-                    </div>
-                  </div>
-                ) : null}
               </>
             )}
           </CardContent>
@@ -776,19 +1342,35 @@ export default function AccountsPage() {
       </section>
 
       <section className="mt-5 space-y-4">
-        <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-3 gap-2 md:grid-cols-4 md:gap-4 xl:grid-cols-8">
           {metricCards.map((item) => {
             const Icon = item.icon;
             const value = summary[item.key];
             return (
-              <Card key={item.key} className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
-                <CardContent className="p-4">
-                  <div className="mb-4 flex items-start justify-between">
-                    <span className="text-xs font-medium text-stone-400">{item.label}</span>
+              <Card
+                key={item.key}
+                className="rounded-2xl border-white/80 bg-white/90 shadow-sm"
+              >
+                <CardContent className="p-2.5 md:p-4">
+                  <div className="mb-2 flex items-start justify-between md:mb-4">
+                    <span className="text-[11px] font-medium text-stone-400 md:text-xs">
+                      {item.label}
+                    </span>
                     <Icon className="size-4 text-stone-400" />
                   </div>
-                  <div className={cn("text-[1.75rem] font-semibold tracking-tight", item.color)}>
-                    <span className={typeof value === "number" ? "" : "text-[1.1rem]"}>
+                  <div
+                    className={cn(
+                      "text-[1.1rem] font-semibold tracking-tight md:text-[1.75rem]",
+                      item.color,
+                    )}
+                  >
+                    <span
+                      className={
+                        typeof value === "number"
+                          ? ""
+                          : "text-[0.9rem] md:text-[1.1rem]"
+                      }
+                    >
                       {typeof value === "number" ? formatCompact(value) : value}
                     </span>
                   </div>
@@ -803,13 +1385,16 @@ export default function AccountsPage() {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
             <h2 className="text-lg font-semibold tracking-tight">账户列表</h2>
-            <Badge variant="secondary" className="rounded-lg bg-stone-200 px-2 py-0.5 text-stone-700">
+            <Badge
+              variant="secondary"
+              className="rounded-lg bg-stone-200 px-2 py-0.5 text-stone-700"
+            >
               {filteredAccounts.length}
             </Badge>
           </div>
 
           <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
-            <div className="relative min-w-[260px]">
+            <div className="relative w-full min-w-0 lg:w-[260px]">
               <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-stone-400" />
               <Input
                 value={query}
@@ -858,13 +1443,32 @@ export default function AccountsPage() {
               </SelectContent>
             </Select>
             <Button
-              className="h-10 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800"
+              className="h-10 w-full rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800 sm:w-auto"
               onClick={() => importInputRef.current?.click()}
               disabled={isImporting}
             >
-              {isImporting ? <LoaderCircle className="size-4 animate-spin" /> : <FileUp className="size-4" />}
+              {isImporting ? (
+                <LoaderCircle className="size-4 animate-spin" />
+              ) : (
+                <FileUp className="size-4" />
+              )}
               导入认证文件
             </Button>
+            {isStudioMode ? (
+              <Button
+                variant="outline"
+                className="h-10 w-full rounded-xl border-stone-200 bg-white px-4 text-stone-700 sm:w-auto"
+                onClick={() => setIsTokenDialogOpen(true)}
+                disabled={isTokenImporting}
+              >
+                {isTokenImporting ? (
+                  <LoaderCircle className="size-4 animate-spin" />
+                ) : (
+                  <FileUp className="size-4" />
+                )}
+                导入 Token
+              </Button>
+            ) : null}
           </div>
         </div>
 
@@ -875,8 +1479,88 @@ export default function AccountsPage() {
                 <LoaderCircle className="size-5 animate-spin" />
               </div>
               <div className="space-y-1">
-                <p className="text-sm font-medium text-stone-700">正在加载账户</p>
-                <p className="text-sm text-stone-500">从后端读取本地 auth 文件和运行状态。</p>
+                <p className="text-sm font-medium text-stone-700">
+                  正在加载账户
+                </p>
+                <p className="text-sm text-stone-500">
+                  从后端读取本地 auth 文件和运行状态。
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {refreshAllRun ? (
+          <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
+            <CardContent className="space-y-3 p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-sm font-medium text-stone-800">
+                    {refreshAllRunning ? (
+                      <LoaderCircle className="size-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="size-4" />
+                    )}
+                    {refreshAllRunning
+                      ? "正在按批次刷新全部额度"
+                      : "最近一次批量刷新"}
+                  </div>
+                  <div className="text-xs leading-5 text-stone-500">
+                    {refreshAllRun.current
+                      ? `当前处理：${refreshAllRun.current}`
+                      : "等待下一次批量刷新"}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-stone-600">
+                  <Badge variant="info" className="rounded-lg px-3 py-1">
+                    已处理 {refreshAllRun.processed}/
+                    {refreshAllRun.total || "?"}
+                  </Badge>
+                  <Badge variant="success" className="rounded-lg px-3 py-1">
+                    成功 {refreshAllRun.refreshed}
+                  </Badge>
+                  <Badge variant="danger" className="rounded-lg px-3 py-1">
+                    失败 {refreshAllRun.failed}
+                  </Badge>
+                </div>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-stone-100">
+                {refreshAllRun.total > 0 ? (
+                  <div
+                    className={cn(
+                      "h-full rounded-full transition-[width] duration-300",
+                      refreshAllRunning
+                        ? "bg-stone-900"
+                        : refreshAllRun.failed > 0
+                          ? "bg-amber-500"
+                          : "bg-emerald-500",
+                    )}
+                    style={{ width: `${refreshAllPercent}%` }}
+                  />
+                ) : (
+                  <div className="h-full w-1/3 rounded-full bg-stone-300 animate-pulse" />
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2 text-[11px] leading-5 text-stone-500">
+                {refreshAllRun.updated_at ? (
+                  <span>
+                    最近更新{" "}
+                    {new Date(refreshAllRun.updated_at).toLocaleTimeString(
+                      "zh-CN",
+                    )}
+                  </span>
+                ) : null}
+                {refreshAllRun.finished_at ? (
+                  <span>
+                    结束时间{" "}
+                    {new Date(refreshAllRun.finished_at).toLocaleTimeString(
+                      "zh-CN",
+                    )}
+                  </span>
+                ) : null}
+                {refreshAllRun.error ? (
+                  <span className="text-rose-500">{refreshAllRun.error}</span>
+                ) : null}
               </div>
             </CardContent>
           </Card>
@@ -894,11 +1578,39 @@ export default function AccountsPage() {
                 <Button
                   variant="ghost"
                   className="h-8 rounded-lg px-3 text-stone-500 hover:bg-stone-100"
-                  onClick={() => void handleRefreshSelectedAccounts(selectedTokens)}
-                  disabled={selectedTokens.length === 0 || isRefreshing}
+                  onClick={() =>
+                    void handleRefreshSelectedAccounts(selectedTokens)
+                  }
+                  disabled={
+                    selectedTokens.length === 0 ||
+                    isRefreshing ||
+                    refreshAllRunning
+                  }
                 >
-                  {isRefreshing ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                  {isRefreshing ? (
+                    <LoaderCircle className="size-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-4" />
+                  )}
                   刷新选中账号信息
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-8 rounded-lg px-3 text-stone-500 hover:bg-stone-100"
+                  onClick={() => void handleRefreshAllAccounts()}
+                  disabled={
+                    accounts.length === 0 ||
+                    refreshAllRunning ||
+                    isRefreshing ||
+                    quotaRefreshingId !== null
+                  }
+                >
+                  {refreshAllRunning ? (
+                    <LoaderCircle className="size-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-4" />
+                  )}
+                  一键刷新所有额度
                 </Button>
                 <Button
                   variant="ghost"
@@ -906,7 +1618,11 @@ export default function AccountsPage() {
                   onClick={() => void handleDeleteTokens(abnormalTokens)}
                   disabled={abnormalTokens.length === 0 || isDeleting}
                 >
-                  {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                  {isDeleting ? (
+                    <LoaderCircle className="size-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="size-4" />
+                  )}
                   移除异常账号
                 </Button>
                 <Button
@@ -915,7 +1631,11 @@ export default function AccountsPage() {
                   onClick={() => void handleDeleteTokens(selectedTokens)}
                   disabled={selectedTokens.length === 0 || isDeleting}
                 >
-                  {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                  {isDeleting ? (
+                    <LoaderCircle className="size-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="size-4" />
+                  )}
                   删除所选
                 </Button>
                 {selectedIds.length > 0 ? (
@@ -926,36 +1646,281 @@ export default function AccountsPage() {
               </div>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="lg:hidden">
+              {currentRows.length > 0 ? (
+                <div className="space-y-3 px-4 py-4">
+                  {currentRows.map((account) => {
+                    const status = statusMeta[account.status];
+                    const StatusIcon = status.icon;
+                    const syncState =
+                      syncSource === "cpa" ? account.syncStatus : null;
+                    const liveQuota = accountQuotaMap[account.id];
+                    const imageGenLimit = extractImageGenLimit(account);
+                    const imageGenRemaining =
+                      liveQuota?.image_gen_remaining ?? imageGenLimit.remaining;
+                    const imageGenRestore = formatRestoreAt(
+                      liveQuota?.image_gen_reset_after ||
+                        imageGenLimit.resetAfter,
+                    );
+                    const isQuotaRefreshing = quotaRefreshingId === account.id;
+
+                    return (
+                      <div
+                        key={account.id}
+                        className="rounded-2xl border border-stone-200/80 bg-stone-50/60 p-3.5"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex min-w-0 flex-1 items-start gap-3">
+                            <Checkbox
+                              checked={selectedIds.includes(account.id)}
+                              onCheckedChange={(checked) => {
+                                setSelectedIds((prev) =>
+                                  checked
+                                    ? Array.from(new Set([...prev, account.id]))
+                                    : prev.filter(
+                                        (item) => item !== account.id,
+                                      ),
+                                );
+                              }}
+                              className="mt-1 shrink-0"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="truncate font-medium tracking-tight text-stone-700">
+                                  {maskToken(account.access_token)}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="shrink-0 rounded-lg p-1 text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
+                                  onClick={() => {
+                                    void navigator.clipboard.writeText(
+                                      account.access_token,
+                                    );
+                                    toast.success("token 已复制");
+                                  }}
+                                >
+                                  <Copy className="size-4" />
+                                </button>
+                              </div>
+                              <div className="mt-1 space-y-0.5 text-[11px] leading-5">
+                                <div
+                                  className="truncate text-stone-500"
+                                  title={account.email ?? ""}
+                                >
+                                  {account.email ?? "—"}
+                                </div>
+                                <div
+                                  className="truncate text-stone-400"
+                                  title={
+                                    account.note
+                                      ? `${account.fileName} · ${account.note}`
+                                      : account.fileName
+                                  }
+                                >
+                                  {account.note
+                                    ? `${account.fileName} · ${account.note}`
+                                    : account.fileName}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="shrink-0 rounded-lg p-2 text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
+                            onClick={() =>
+                              void handleRefreshAccountQuota(account)
+                            }
+                            disabled={isQuotaRefreshing || refreshAllRunning}
+                            aria-label="刷新图片额度"
+                          >
+                            <RefreshCw
+                              className={cn(
+                                "size-4",
+                                isQuotaRefreshing ? "animate-spin" : "",
+                              )}
+                            />
+                          </button>
+                        </div>
+
+                        <div className="mt-2.5 flex flex-wrap gap-1.5">
+                          <Badge
+                            variant="secondary"
+                            className="rounded-md bg-stone-100 px-2 py-0.5 text-[11px] text-stone-700"
+                          >
+                            {account.type}
+                          </Badge>
+                          <Badge
+                            variant={
+                              sourceKindMeta[account.sourceKind ?? "auth_file"]
+                                .badge
+                            }
+                            className="rounded-md px-2 py-0.5 text-[11px]"
+                          >
+                            {
+                              sourceKindMeta[account.sourceKind ?? "auth_file"]
+                                .label
+                            }
+                          </Badge>
+                          <Badge
+                            variant={status.badge}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px]"
+                          >
+                            <StatusIcon className="size-3.5" />
+                            {account.status}
+                          </Badge>
+                          {syncState ? (
+                            <Badge
+                              variant={syncMeta[syncState].badge}
+                              className="rounded-md px-2 py-0.5 text-[11px]"
+                            >
+                              {syncMeta[syncState].label}
+                            </Badge>
+                          ) : null}
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-stone-500">
+                          <div className="rounded-xl bg-white px-3 py-2.5">
+                            <div className="text-[11px] uppercase tracking-[0.14em] text-stone-400">
+                              图片额度
+                            </div>
+                            <div className="mt-1 text-sm font-semibold text-stone-700">
+                              {imageGenRemaining == null
+                                ? "—"
+                                : formatQuota(imageGenRemaining)}
+                            </div>
+                            <div className="mt-1 text-[11px] text-stone-400">
+                              本地额度 {formatQuota(account.quota)}
+                            </div>
+                          </div>
+                          <div className="rounded-xl bg-white px-3 py-2.5">
+                            <div className="text-[11px] uppercase tracking-[0.14em] text-stone-400">
+                              图片重置
+                            </div>
+                            <div className="mt-1 text-sm font-semibold text-stone-700">
+                              {imageGenRestore.relative ||
+                                imageGenRestore.absoluteShort}
+                            </div>
+                            <div
+                              className="mt-1 break-all font-mono text-[11px] text-stone-400"
+                              title={imageGenRestore.absolute}
+                            >
+                              {imageGenRestore.absoluteShort}
+                            </div>
+                          </div>
+                          <div className="rounded-xl bg-white px-3 py-2.5">
+                            <div className="text-[11px] uppercase tracking-[0.14em] text-stone-400">
+                              成功
+                            </div>
+                            <div className="mt-1 text-sm font-semibold text-stone-700">
+                              {account.success}
+                            </div>
+                          </div>
+                          <div className="rounded-xl bg-white px-3 py-2.5">
+                            <div className="text-[11px] uppercase tracking-[0.14em] text-stone-400">
+                              失败
+                            </div>
+                            <div className="mt-1 text-sm font-semibold text-stone-700">
+                              {account.fail}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 flex items-center justify-end gap-1 border-t border-stone-200/70 pt-3 text-stone-400">
+                          <button
+                            type="button"
+                            className="rounded-lg p-2 transition hover:bg-stone-100 hover:text-stone-700"
+                            onClick={() => openEditDialog(account)}
+                            disabled={isUpdating}
+                          >
+                            <Pencil className="size-4" />
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-lg p-2 transition hover:bg-rose-50 hover:text-rose-500"
+                            onClick={() =>
+                              void handleDeleteTokens([account.access_token])
+                            }
+                            disabled={isDeleting}
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : !isLoading ? (
+                <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
+                  <div className="rounded-xl bg-stone-100 p-3 text-stone-500">
+                    <Search className="size-5" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-stone-700">
+                      没有匹配的账户
+                    </p>
+                    <p className="text-sm text-stone-500">
+                      调整筛选条件或搜索关键字后重试。
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="hidden overflow-x-auto lg:block">
               <table className="w-full min-w-[1120px] text-left">
                 <thead className="border-b border-stone-100 text-[11px] text-stone-400 uppercase tracking-[0.18em]">
                   <tr>
                     <th className="w-12 px-4 py-3 text-center">
                       <Checkbox
                         checked={allCurrentSelected}
-                        onCheckedChange={(checked) => toggleSelectAll(Boolean(checked))}
+                        onCheckedChange={(checked) =>
+                          toggleSelectAll(Boolean(checked))
+                        }
                       />
                     </th>
-                    <th className="w-80 px-4 py-3 whitespace-nowrap">账号 / Token</th>
-                    <th className="w-28 px-4 py-3 text-center whitespace-nowrap">类型</th>
-                    <th className="w-24 px-4 py-3 text-center whitespace-nowrap">状态</th>
-                    <th className="w-28 px-4 py-3 text-center whitespace-nowrap">同步</th>
-                    <th className="w-32 px-4 py-3 text-center whitespace-nowrap">图片额度</th>
-                    <th className="w-44 px-4 py-3 text-center whitespace-nowrap">图片重置</th>
-                    <th className="w-18 px-4 py-3 text-center whitespace-nowrap">成功</th>
-                    <th className="w-18 px-4 py-3 text-center whitespace-nowrap">失败</th>
-                    <th className="w-24 px-4 py-3 text-center whitespace-nowrap">操作</th>
+                    <th className="w-80 px-4 py-3 whitespace-nowrap">
+                      账号 / Token
+                    </th>
+                    <th className="w-28 px-4 py-3 text-center whitespace-nowrap">
+                      类型 / 来源
+                    </th>
+                    <th className="w-24 px-4 py-3 text-center whitespace-nowrap">
+                      状态
+                    </th>
+                    <th className="w-28 px-4 py-3 text-center whitespace-nowrap">
+                      同步
+                    </th>
+                    <th className="w-32 px-4 py-3 text-center whitespace-nowrap">
+                      图片额度
+                    </th>
+                    <th className="w-44 px-4 py-3 text-center whitespace-nowrap">
+                      图片重置
+                    </th>
+                    <th className="w-18 px-4 py-3 text-center whitespace-nowrap">
+                      成功
+                    </th>
+                    <th className="w-18 px-4 py-3 text-center whitespace-nowrap">
+                      失败
+                    </th>
+                    <th className="w-24 px-4 py-3 text-center whitespace-nowrap">
+                      操作
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {currentRows.map((account) => {
                     const status = statusMeta[account.status];
                     const StatusIcon = status.icon;
-                    const syncState = syncMap[account.fileName]?.status || account.syncStatus;
+                    const syncState =
+                      syncSource === "cpa" ? account.syncStatus : null;
                     const liveQuota = accountQuotaMap[account.id];
                     const imageGenLimit = extractImageGenLimit(account);
-                    const imageGenRemaining = liveQuota?.image_gen_remaining ?? imageGenLimit.remaining;
-                    const imageGenRestore = formatRestoreAt(liveQuota?.image_gen_reset_after || imageGenLimit.resetAfter);
+                    const imageGenRemaining =
+                      liveQuota?.image_gen_remaining ?? imageGenLimit.remaining;
+                    const imageGenRestore = formatRestoreAt(
+                      liveQuota?.image_gen_reset_after ||
+                        imageGenLimit.resetAfter,
+                    );
                     const isQuotaRefreshing = quotaRefreshingId === account.id;
 
                     return (
@@ -984,7 +1949,9 @@ export default function AccountsPage() {
                               type="button"
                               className="rounded-lg p-1 text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
                               onClick={() => {
-                                void navigator.clipboard.writeText(account.access_token);
+                                void navigator.clipboard.writeText(
+                                  account.access_token,
+                                );
                                 toast.success("token 已复制");
                               }}
                             >
@@ -992,23 +1959,51 @@ export default function AccountsPage() {
                             </button>
                           </div>
                           <div className="mt-1 space-y-0.5 text-xs">
-                            <div className="truncate text-stone-500" title={account.email ?? ""}>
+                            <div
+                              className="truncate text-stone-500"
+                              title={account.email ?? ""}
+                            >
                               {account.email ?? "—"}
                             </div>
-                            <div className="truncate text-stone-400" title={account.fileName}>
+                            <div
+                              className="truncate text-stone-400"
+                              title={account.fileName}
+                            >
                               {account.fileName}
                             </div>
                             {account.note ? (
-                              <div className="truncate text-stone-400" title={account.note}>
+                              <div
+                                className="truncate text-stone-400"
+                                title={account.note}
+                              >
                                 {account.note}
                               </div>
                             ) : null}
                           </div>
                         </td>
                         <td className="px-4 py-3 text-center whitespace-nowrap">
-                          <Badge variant="secondary" className="rounded-md bg-stone-100 text-stone-700">
-                            {account.type}
-                          </Badge>
+                          <div className="flex flex-col items-center gap-1">
+                            <Badge
+                              variant="secondary"
+                              className="rounded-md bg-stone-100 text-stone-700"
+                            >
+                              {account.type}
+                            </Badge>
+                            <Badge
+                              variant={
+                                sourceKindMeta[
+                                  account.sourceKind ?? "auth_file"
+                                ].badge
+                              }
+                              className="rounded-md px-2 py-0.5 text-[11px]"
+                            >
+                              {
+                                sourceKindMeta[
+                                  account.sourceKind ?? "auth_file"
+                                ].label
+                              }
+                            </Badge>
+                          </div>
                         </td>
                         <td className="px-4 py-3 text-center whitespace-nowrap">
                           <Badge
@@ -1021,7 +2016,10 @@ export default function AccountsPage() {
                         </td>
                         <td className="px-4 py-3 text-center whitespace-nowrap">
                           {syncState ? (
-                            <Badge variant={syncMeta[syncState].badge} className="rounded-md px-2 py-1">
+                            <Badge
+                              variant={syncMeta[syncState].badge}
+                              className="rounded-md px-2 py-1"
+                            >
                               {syncMeta[syncState].label}
                             </Badge>
                           ) : (
@@ -1032,38 +2030,66 @@ export default function AccountsPage() {
                           <div className="flex flex-col items-center gap-2">
                             <div className="flex items-center gap-2">
                               <Badge variant="info" className="rounded-md">
-                                {imageGenRemaining == null ? "—" : formatQuota(imageGenRemaining)}
+                                {imageGenRemaining == null
+                                  ? "—"
+                                  : formatQuota(imageGenRemaining)}
                               </Badge>
                               <button
                                 type="button"
                                 className="rounded-lg p-1 text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
-                                onClick={() => void handleRefreshAccountQuota(account)}
-                                disabled={isQuotaRefreshing}
+                                onClick={() =>
+                                  void handleRefreshAccountQuota(account)
+                                }
+                                disabled={
+                                  isQuotaRefreshing || refreshAllRunning
+                                }
                               >
-                                <RefreshCw className={cn("size-3.5", isQuotaRefreshing ? "animate-spin" : "")} />
+                                <RefreshCw
+                                  className={cn(
+                                    "size-3.5",
+                                    isQuotaRefreshing ? "animate-spin" : "",
+                                  )}
+                                />
                               </button>
                             </div>
-                            <div className="text-[11px] text-stone-400">本地额度 {formatQuota(account.quota)}</div>
+                            <div className="text-[11px] text-stone-400">
+                              本地额度 {formatQuota(account.quota)}
+                            </div>
                           </div>
                         </td>
                         <td className="px-4 py-3 text-center text-xs text-stone-500 whitespace-nowrap">
                           {imageGenRestore.relative ? (
                             <div
                               className="flex items-center justify-center gap-2"
-                              title={imageGenRestore.absolute !== "—" ? imageGenRestore.absolute : undefined}
+                              title={
+                                imageGenRestore.absolute !== "—"
+                                  ? imageGenRestore.absolute
+                                  : undefined
+                              }
                             >
-                              <span className="font-medium text-stone-700">{imageGenRestore.relative}</span>
+                              <span className="font-medium text-stone-700">
+                                {imageGenRestore.relative}
+                              </span>
                               <span className="text-stone-300">·</span>
-                              <span className="font-mono tabular-nums text-stone-400">{imageGenRestore.absoluteShort}</span>
+                              <span className="font-mono tabular-nums text-stone-400">
+                                {imageGenRestore.absoluteShort}
+                              </span>
                             </div>
                           ) : (
-                            <div className="truncate font-mono tabular-nums text-stone-400" title={imageGenRestore.absolute}>
+                            <div
+                              className="truncate font-mono tabular-nums text-stone-400"
+                              title={imageGenRestore.absolute}
+                            >
                               {imageGenRestore.absoluteShort}
                             </div>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-center text-stone-500 whitespace-nowrap">{account.success}</td>
-                        <td className="px-4 py-3 text-center text-stone-500 whitespace-nowrap">{account.fail}</td>
+                        <td className="px-4 py-3 text-center text-stone-500 whitespace-nowrap">
+                          {account.success}
+                        </td>
+                        <td className="px-4 py-3 text-center text-stone-500 whitespace-nowrap">
+                          {account.fail}
+                        </td>
                         <td className="px-4 py-3 text-center">
                           <div className="flex items-center justify-center gap-1 text-stone-400">
                             <button
@@ -1077,7 +2103,9 @@ export default function AccountsPage() {
                             <button
                               type="button"
                               className="rounded-lg p-2 transition hover:bg-rose-50 hover:text-rose-500"
-                              onClick={() => void handleDeleteTokens([account.access_token])}
+                              onClick={() =>
+                                void handleDeleteTokens([account.access_token])
+                              }
                               disabled={isDeleting}
                             >
                               <Trash2 className="size-4" />
@@ -1096,8 +2124,12 @@ export default function AccountsPage() {
                     <Search className="size-5" />
                   </div>
                   <div className="space-y-1">
-                    <p className="text-sm font-medium text-stone-700">没有匹配的账户</p>
-                    <p className="text-sm text-stone-500">调整筛选条件或搜索关键字后重试。</p>
+                    <p className="text-sm font-medium text-stone-700">
+                      没有匹配的账户
+                    </p>
+                    <p className="text-sm text-stone-500">
+                      调整筛选条件或搜索关键字后重试。
+                    </p>
                   </div>
                 </div>
               ) : null}
@@ -1107,7 +2139,11 @@ export default function AccountsPage() {
               <div className="flex items-center justify-center gap-3 overflow-x-auto whitespace-nowrap">
                 <div className="shrink-0 text-sm text-stone-500">
                   显示第 {filteredAccounts.length === 0 ? 0 : startIndex + 1} -{" "}
-                  {Math.min(startIndex + Number(pageSize), filteredAccounts.length)} 条，共 {filteredAccounts.length} 条
+                  {Math.min(
+                    startIndex + Number(pageSize),
+                    filteredAccounts.length,
+                  )}{" "}
+                  条，共 {filteredAccounts.length} 条
                 </div>
 
                 <span className="shrink-0 text-sm leading-none text-stone-500">
@@ -1141,7 +2177,10 @@ export default function AccountsPage() {
                 </Button>
                 {paginationItems.map((item, index) =>
                   item === "..." ? (
-                    <span key={`ellipsis-${index}`} className="px-1 text-sm text-stone-400">
+                    <span
+                      key={`ellipsis-${index}`}
+                      className="px-1 text-sm text-stone-400"
+                    >
                       ...
                     </span>
                   ) : (
@@ -1165,7 +2204,9 @@ export default function AccountsPage() {
                   size="icon"
                   className="size-10 shrink-0 rounded-lg border-stone-200 bg-white"
                   disabled={safePage >= pageCount}
-                  onClick={() => setPage((prev) => Math.min(pageCount, prev + 1))}
+                  onClick={() =>
+                    setPage((prev) => Math.min(pageCount, prev + 1))
+                  }
                 >
                   <ChevronRight className="size-4" />
                 </Button>

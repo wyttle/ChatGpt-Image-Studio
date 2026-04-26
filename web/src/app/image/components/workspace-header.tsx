@@ -3,7 +3,6 @@
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-
 type WorkspaceHeaderProps = {
   historyCollapsed: boolean;
   selectedConversationTitle?: string | null;
@@ -16,7 +15,7 @@ export function WorkspaceHeader({
   onToggleHistory,
 }: WorkspaceHeaderProps) {
   return (
-    <div className="border-b border-stone-200/80 px-5 py-4 sm:px-6">
+    <div className="hidden border-b border-stone-200/80 px-5 py-4 sm:px-6 lg:block">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <Button

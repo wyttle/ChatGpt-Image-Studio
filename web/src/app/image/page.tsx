@@ -3,9 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "react-medium-image-zoom/dist/styles.css";
 import { ChevronsDown } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import { ImageEditModal } from "@/components/image-edit-modal";
-import { fetchAccounts, fetchConfig, fetchImageTask, waitForImageTask, type Account, type ImageQuality } from "@/lib/api";
+import {
+  fetchAccounts,
+  fetchConfig,
+  fetchImageTask,
+  waitForImageTask,
+  type Account,
+  type ImageQuality,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   normalizeConversation,
@@ -14,7 +22,13 @@ import {
   type ImageConversation,
   type ImageMode,
 } from "@/store/image-conversations";
-import { finishImageTask, isImageTaskActive, listActiveImageTasks, startImageTask, subscribeImageTasks } from "@/store/image-active-tasks";
+import {
+  finishImageTask,
+  isImageTaskActive,
+  listActiveImageTasks,
+  startImageTask,
+  subscribeImageTasks,
+} from "@/store/image-active-tasks";
 import { ConversationTurns } from "./components/conversation-turns";
 import { EmptyState } from "./components/empty-state";
 import { HistorySidebar } from "./components/history-sidebar";
@@ -36,7 +50,10 @@ type ImageResolutionPreset = {
   access: ImageResolutionAccess;
 };
 
-const imageAspectRatioOptions: Array<{ label: string; value: ImageAspectRatio }> = [
+const imageAspectRatioOptions: Array<{
+  label: string;
+  value: ImageAspectRatio;
+}> = [
   { label: "1:1", value: "1:1" },
   { label: "4:3", value: "4:3" },
   { label: "3:2", value: "3:2" },
@@ -45,11 +62,19 @@ const imageAspectRatioOptions: Array<{ label: string; value: ImageAspectRatio }>
   { label: "9:16", value: "9:16" },
 ];
 
-const imageResolutionPresets: Record<ImageAspectRatio, ImageResolutionPreset[]> = {
+const imageResolutionPresets: Record<
+  ImageAspectRatio,
+  ImageResolutionPreset[]
+> = {
   "1:1": [
     { tier: "sd", label: "Free 实际档", value: "1248x1248", access: "free" },
     { tier: "2k", label: "Paid 2K", value: "2048x2048", access: "paid" },
-    { tier: "4k", label: "Paid 高像素上限", value: "2880x2880", access: "paid" },
+    {
+      tier: "4k",
+      label: "Paid 高像素上限",
+      value: "2880x2880",
+      access: "paid",
+    },
   ],
   "4:3": [
     { tier: "sd", label: "Free 实际档", value: "1440x1072", access: "free" },
@@ -78,23 +103,39 @@ const imageResolutionPresets: Record<ImageAspectRatio, ImageResolutionPreset[]> 
   ],
 };
 
-const modeOptions: Array<{ label: string; value: ImageMode; description: string }> = [
-  { label: "生成", value: "generate", description: "提示词生成新图，也可上传参考图辅助生成" },
+const modeOptions: Array<{
+  label: string;
+  value: ImageMode;
+  description: string;
+}> = [
+  {
+    label: "生成",
+    value: "generate",
+    description: "提示词生成新图，也可上传参考图辅助生成",
+  },
   { label: "编辑", value: "edit", description: "上传图像后局部或整体改图" },
-  { label: "放大", value: "upscale", description: "提升清晰度并放大细节" },
 ];
-
-const upscaleOptions = ["2x", "4x"];
-const imageQualityOptions: Array<{ label: string; value: ImageQuality; description: string }> = [
+const imageQualityOptions: Array<{
+  label: string;
+  value: ImageQuality;
+  description: string;
+}> = [
   { label: "Low", value: "low", description: "低质量，速度更快，适合草稿测试" },
-  { label: "Medium", value: "medium", description: "均衡质量与速度，适合日常生成" },
-  { label: "High", value: "high", description: "高质量，耗时更长，适合最终出图" },
+  {
+    label: "Medium",
+    value: "medium",
+    description: "均衡质量与速度，适合日常生成",
+  },
+  {
+    label: "High",
+    value: "high",
+    description: "高质量，耗时更长，适合最终出图",
+  },
 ];
 
 const modeLabelMap: Record<ImageMode, string> = {
   generate: "生成",
   edit: "编辑",
-  upscale: "放大",
 };
 
 function formatResolutionLabel(value: string) {
@@ -169,12 +210,21 @@ function formatConversationTime(value: string) {
 }
 
 function formatAvailableQuota(accounts: Account[], allowDisabled: boolean) {
-  const availableAccounts = accounts.filter((account) => isImageAccountUsable(account, allowDisabled));
-  return String(availableAccounts.reduce((sum, account) => sum + getImageRemaining(account), 0));
+  const availableAccounts = accounts.filter((account) =>
+    isImageAccountUsable(account, allowDisabled),
+  );
+  return String(
+    availableAccounts.reduce(
+      (sum, account) => sum + getImageRemaining(account),
+      0,
+    ),
+  );
 }
 
 function getImageRemaining(account: Account) {
-  const limit = account.limits_progress?.find((item) => item.feature_name === "image_gen");
+  const limit = account.limits_progress?.find(
+    (item) => item.feature_name === "image_gen",
+  );
   if (typeof limit?.remaining === "number") {
     return Math.max(0, limit.remaining);
   }
@@ -183,14 +233,42 @@ function getImageRemaining(account: Account) {
 
 function isImageAccountUsable(account: Account, allowDisabled: boolean) {
   const disabled = Boolean(account.disabled) || account.status === "禁用";
-  return (!disabled || allowDisabled) && account.status !== "异常" && account.status !== "限流" && getImageRemaining(account) > 0;
+  return (
+    (!disabled || allowDisabled) &&
+    account.status !== "异常" &&
+    account.status !== "限流" &&
+    getImageRemaining(account) > 0
+  );
 }
 
-function hasAvailablePaidImageAccount(accounts: Account[], allowDisabled: boolean) {
+function hasAvailablePaidImageAccount(
+  accounts: Account[],
+  allowDisabled: boolean,
+) {
   return accounts.some(
     (account) =>
       isImageAccountUsable(account, allowDisabled) &&
-      (account.type === "Plus" || account.type === "Pro" || account.type === "Team"),
+      (account.type === "Plus" ||
+        account.type === "Pro" ||
+        account.type === "Team"),
+  );
+}
+
+function hasUsableFreeLegacyAccount(
+  accounts: Account[],
+  allowDisabled: boolean,
+  imageMode: "studio" | "cpa",
+  freeImageRoute: string,
+) {
+  if (imageMode !== "studio" || freeImageRoute !== "legacy") {
+    return false;
+  }
+  return accounts.some(
+    (account) =>
+      isImageAccountUsable(account, allowDisabled) &&
+      account.type !== "Plus" &&
+      account.type !== "Pro" &&
+      account.type !== "Team",
   );
 }
 
@@ -203,7 +281,9 @@ async function normalizeConversationHistory(items: ImageConversation[]) {
       }
 
       changed = true;
-      const errorMessage = turn.images.some((image) => image.status === "success")
+      const errorMessage = turn.images.some(
+        (image) => image.status === "success",
+      )
         ? turn.error || "任务已中断"
         : "页面已刷新，任务已中断";
 
@@ -292,41 +372,40 @@ function buildProcessingStatus(
   if (mode === "edit") {
     if (elapsedSeconds < 4) {
       return {
-        title: variant === "selection-edit" ? "正在提交选区编辑" : "正在提交编辑请求",
+        title:
+          variant === "selection-edit"
+            ? "正在提交选区编辑"
+            : "正在提交编辑请求",
         detail: "请求已发送，正在准备处理素材",
       };
     }
     if (elapsedSeconds < 12) {
       return {
-        title: variant === "selection-edit" ? "正在上传源图和选区" : "正在上传编辑素材",
+        title:
+          variant === "selection-edit"
+            ? "正在上传源图和选区"
+            : "正在上传编辑素材",
         detail: "素材上传完成后会立即进入改图阶段",
       };
     }
     return {
-      title: variant === "selection-edit" ? "模型正在按选区修改图片" : "模型正在编辑图片",
+      title:
+        variant === "selection-edit"
+          ? "模型正在按选区修改图片"
+          : "模型正在编辑图片",
       detail: "通常需要 20 到 90 秒，请保持页面开启",
     };
   }
 
-  if (elapsedSeconds < 4) {
-    return {
-      title: "正在提交放大请求",
-      detail: "请求已发送，正在准备源图",
-    };
-  }
-  if (elapsedSeconds < 12) {
-    return {
-      title: "正在上传源图",
-      detail: "即将进入清晰度增强阶段",
-    };
-  }
   return {
-    title: "模型正在增强清晰度与细节",
+    title: "模型正在编辑图片",
     detail: "通常需要 20 到 90 秒，请保持页面开启",
   };
 }
 
 export default function ImagePage() {
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
   const didLoadQuotaRef = useRef(false);
   const mountedRef = useRef(true);
   const draftSelectionRef = useRef(false);
@@ -343,43 +422,67 @@ export default function ImagePage() {
   const [mode, setMode] = useState<ImageMode>("generate");
   const [imagePrompt, setImagePrompt] = useState("");
   const [imageCount, setImageCount] = useState("1");
-  const [imageAspectRatio, setImageAspectRatio] = useState<ImageAspectRatio>("1:1");
-  const [imageResolutionTier, setImageResolutionTier] = useState<ImageResolutionTier>("sd");
+  const [imageAspectRatio, setImageAspectRatio] =
+    useState<ImageAspectRatio>("1:1");
+  const [imageResolutionTier, setImageResolutionTier] =
+    useState<ImageResolutionTier>("sd");
   const [imageQuality, setImageQuality] = useState<ImageQuality>("high");
-  const [upscaleScale, setUpscaleScale] = useState("2x");
   const [historyCollapsed, setHistoryCollapsed] = useState(false);
+  const [isDesktopLayout, setIsDesktopLayout] = useState(() =>
+    typeof window !== "undefined"
+      ? window.matchMedia("(min-width: 1024px)").matches
+      : false,
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [availableQuota, setAvailableQuota] = useState("加载中");
   const [availableAccounts, setAvailableAccounts] = useState<Account[]>([]);
-  const [allowDisabledStudioAccounts, setAllowDisabledStudioAccounts] = useState(false);
-  const [isCPAImageMode, setIsCPAImageMode] = useState(false);
-  const [activeRequest, setActiveRequest] = useState<ActiveRequestState | null>(null);
+  const [allowDisabledStudioAccounts, setAllowDisabledStudioAccounts] =
+    useState(false);
+  const [configuredImageMode, setConfiguredImageMode] = useState<
+    "studio" | "cpa"
+  >("studio");
+  const [configuredFreeImageRoute, setConfiguredFreeImageRoute] =
+    useState("legacy");
+  const [activeRequest, setActiveRequest] = useState<ActiveRequestState | null>(
+    null,
+  );
   const [submitStartedAt, setSubmitStartedAt] = useState<number | null>(null);
   const [submitElapsedSeconds, setSubmitElapsedSeconds] = useState(0);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [isMobileComposerCollapsed, setIsMobileComposerCollapsed] =
+    useState(true);
 
-  const syncRuntimeTaskState = useCallback((preferredConversationId?: string | null) => {
-    const tasks = listActiveImageTasks();
-    const nextTask =
-      tasks.find((task) => preferredConversationId && task.conversationId === preferredConversationId) ?? tasks[0] ?? null;
+  const syncRuntimeTaskState = useCallback(
+    (preferredConversationId?: string | null) => {
+      const tasks = listActiveImageTasks();
+      const nextTask =
+        tasks.find(
+          (task) =>
+            preferredConversationId &&
+            task.conversationId === preferredConversationId,
+        ) ??
+        tasks[0] ??
+        null;
 
-    setIsSubmitting(tasks.length > 0);
-    setActiveRequest(
-      nextTask
-        ? {
-            conversationId: nextTask.conversationId,
-            turnId: nextTask.turnId,
-            mode: nextTask.mode,
-            count: nextTask.count,
-            variant: nextTask.variant,
-          }
-        : null,
-    );
-    setSubmitStartedAt(nextTask?.startedAt ?? null);
-    if (!nextTask) {
-      setSubmitElapsedSeconds(0);
-    }
-  }, []);
+      setIsSubmitting(tasks.length > 0);
+      setActiveRequest(
+        nextTask
+          ? {
+              conversationId: nextTask.conversationId,
+              turnId: nextTask.turnId,
+              mode: nextTask.mode,
+              count: nextTask.count,
+              variant: nextTask.variant,
+            }
+          : null,
+      );
+      setSubmitStartedAt(nextTask?.startedAt ?? null);
+      if (!nextTask) {
+        setSubmitElapsedSeconds(0);
+      }
+    },
+    [],
+  );
 
   const {
     conversations,
@@ -408,27 +511,38 @@ export default function ImagePage() {
     removeSourceImage,
     seedFromResult,
     openSelectionEditor,
+    openSourceSelectionEditor,
     closeSelectionEditor,
   } = useImageSourceInputs({
     mode,
     isSubmitting,
+    selectedConversationId,
     setMode,
-    setImagePrompt,
     focusConversation,
     textareaRef,
     makeId,
   });
 
   const selectedConversation = useMemo(
-    () => conversations.find((item) => item.id === selectedConversationId) ?? null,
+    () =>
+      conversations.find((item) => item.id === selectedConversationId) ?? null,
     [conversations, selectedConversationId],
   );
+  const currentImageView = useMemo<"history" | "workspace">(
+    () => (pathname.endsWith("/workspace") ? "workspace" : "history"),
+    [pathname],
+  );
+  const isStandaloneHistory =
+    !isDesktopLayout && currentImageView === "history";
+  const isStandaloneWorkspace =
+    !isDesktopLayout && currentImageView === "workspace";
   const selectedConversationTurns = useMemo(
     () => selectedConversation?.turns ?? [],
     [selectedConversation],
   );
   const selectedConversationLastTurn = useMemo(
-    () => selectedConversationTurns[selectedConversationTurns.length - 1] ?? null,
+    () =>
+      selectedConversationTurns[selectedConversationTurns.length - 1] ?? null,
     [selectedConversationTurns],
   );
   const selectedConversationLastTurnKey = useMemo(() => {
@@ -436,16 +550,69 @@ export default function ImagePage() {
       return "";
     }
     const imageKey = selectedConversationLastTurn.images
-      .map((image) => `${image.id}:${image.status ?? "loading"}:${image.error ?? ""}`)
+      .map(
+        (image) =>
+          `${image.id}:${image.status ?? "loading"}:${image.error ?? ""}`,
+      )
       .join("|");
     return `${selectedConversationLastTurn.id}:${selectedConversationLastTurn.status}:${imageKey}`;
   }, [selectedConversationLastTurn]);
-  const parsedCount = useMemo(() => Math.max(1, Math.min(8, Number(imageCount) || 1)), [imageCount]);
-  const hasAvailablePaidAccount = useMemo(
-    () => isCPAImageMode || hasAvailablePaidImageAccount(availableAccounts, allowDisabledStudioAccounts),
-    [allowDisabledStudioAccounts, availableAccounts, isCPAImageMode],
+  const parsedCount = useMemo(
+    () => Math.max(1, Math.min(8, Number(imageCount) || 1)),
+    [imageCount],
   );
-  const currentResolutionPresets = useMemo(() => imageResolutionPresets[imageAspectRatio], [imageAspectRatio]);
+  const hasAvailablePaidAccount = useMemo(
+    () =>
+      configuredImageMode === "cpa" ||
+      hasAvailablePaidImageAccount(
+        availableAccounts,
+        allowDisabledStudioAccounts,
+      ),
+    [allowDisabledStudioAccounts, availableAccounts, configuredImageMode],
+  );
+  const hasLegacyFreeAccountInPool = useMemo(
+    () =>
+      hasUsableFreeLegacyAccount(
+        availableAccounts,
+        allowDisabledStudioAccounts,
+        configuredImageMode,
+        configuredFreeImageRoute,
+      ),
+    [
+      allowDisabledStudioAccounts,
+      availableAccounts,
+      configuredFreeImageRoute,
+      configuredImageMode,
+    ],
+  );
+  const currentResolutionPresets = useMemo(
+    () => imageResolutionPresets[imageAspectRatio],
+    [imageAspectRatio],
+  );
+  const selectedResolutionPreset = useMemo(
+    () =>
+      currentResolutionPresets.find(
+        (item) => item.tier === imageResolutionTier,
+      ) ?? currentResolutionPresets[0],
+    [currentResolutionPresets, imageResolutionTier],
+  );
+  const currentRequestRequiresPaidAccount =
+    selectedResolutionPreset?.access === "paid";
+  const imageQualityDisabledReason = currentRequestRequiresPaidAccount
+    ? "当前输出档位会固定走 Paid 账号，质量参数应可正常生效。"
+    : "当前可用号池里仍有 Free legacy 链路账号，标准分辨率请求可能落到该链路，质量参数无法稳定作为正式参数传给上游，暂时置灰。";
+  const isImageQualityEnabled = useMemo(
+    () =>
+      configuredImageMode === "cpa" ||
+      !hasLegacyFreeAccountInPool ||
+      (currentRequestRequiresPaidAccount && hasAvailablePaidAccount),
+    [
+      configuredImageMode,
+      currentRequestRequiresPaidAccount,
+      hasAvailablePaidAccount,
+      hasLegacyFreeAccountInPool,
+    ],
+  );
   const imageResolutionTierOptions = useMemo(
     () =>
       currentResolutionPresets.map((item) => ({
@@ -457,7 +624,9 @@ export default function ImagePage() {
   );
   const imageResolutionTierLabel = useMemo(
     () =>
-      imageResolutionTierOptions.find((item) => item.value === imageResolutionTier && !item.disabled)?.label ??
+      imageResolutionTierOptions.find(
+        (item) => item.value === imageResolutionTier && !item.disabled,
+      )?.label ??
       imageResolutionTierOptions.find((item) => !item.disabled)?.label ??
       "",
     [imageResolutionTier, imageResolutionTierOptions],
@@ -465,45 +634,100 @@ export default function ImagePage() {
   const imageSize = useMemo(
     () =>
       currentResolutionPresets.find(
-        (item) => item.tier === imageResolutionTier && (hasAvailablePaidAccount || item.access === "free"),
+        (item) =>
+          item.tier === imageResolutionTier &&
+          (hasAvailablePaidAccount || item.access === "free"),
       )?.value ??
-      currentResolutionPresets.find((item) => hasAvailablePaidAccount || item.access === "free")?.value ??
+      currentResolutionPresets.find(
+        (item) => hasAvailablePaidAccount || item.access === "free",
+      )?.value ??
       currentResolutionPresets[0].value,
     [currentResolutionPresets, hasAvailablePaidAccount, imageResolutionTier],
   );
   const imageSizeHint = useMemo(
-    () => (
-      <>
-        <div>
-          <span className="font-semibold text-stone-800">分辨率限制：</span>
-          Free 账号当前按约 1.57M 像素总量控制；Paid 账号的图片最长边最高支持 3840。
-        </div>
-        <div className="mt-2">
-          <span className="font-semibold text-stone-800">账号要求：</span>
-          2K 及以上像素档仅 Paid 账号可用，包括 Team / Plus / Pro。
-        </div>
-      </>
-    ),
-    [],
+    () =>
+      mode === "edit" ? (
+        <>
+          <div>
+            <span className="font-semibold text-stone-800">编辑输出尺寸：</span>
+            编辑模式会尽量按所选比例和分辨率输出结果，但最终尺寸仍可能受源图比例、遮罩范围和上游模型能力影响。
+          </div>
+          <div className="mt-2">
+            <span className="font-semibold text-stone-800">质量说明：</span>
+            输出质量会跟随当前质量档位；如果请求落到 Free legacy
+            链路，质量参数可能不会作为正式参数生效。
+          </div>
+        </>
+      ) : (
+        <>
+          <div>
+            <span className="font-semibold text-stone-800">分辨率限制：</span>
+            Free 账号当前按约 1.57M 像素总量控制；Paid 账号的图片最长边最高支持
+            3840。
+          </div>
+          <div className="mt-2">
+            <span className="font-semibold text-stone-800">账号要求：</span>
+            2K 及以上像素档仅 Paid 账号可用，包括 Team / Plus / Pro。
+          </div>
+        </>
+      ),
+    [mode],
   );
-  const imageSources = useMemo(() => sourceImages.filter((item) => item.role === "image"), [sourceImages]);
-  const maskSource = useMemo(() => sourceImages.find((item) => item.role === "mask") ?? null, [sourceImages]);
-  const hasGenerateReferences = useMemo(() => mode === "generate" && imageSources.length > 0, [imageSources, mode]);
-  const activeConversationIds = new Set(listActiveImageTasks().map((task) => task.conversationId));
+  const imageSources = useMemo(
+    () => sourceImages.filter((item) => item.role === "image"),
+    [sourceImages],
+  );
+  const maskSource = useMemo(
+    () => sourceImages.find((item) => item.role === "mask") ?? null,
+    [sourceImages],
+  );
+  const hasGenerateReferences = useMemo(
+    () => mode === "generate" && imageSources.length > 0,
+    [imageSources, mode],
+  );
+  const activeConversationIds = new Set(
+    listActiveImageTasks().map((task) => task.conversationId),
+  );
   const processingStatus = useMemo(
     () =>
       activeRequest
-        ? buildProcessingStatus(activeRequest.mode, submitElapsedSeconds, activeRequest.count, activeRequest.variant)
+        ? buildProcessingStatus(
+            activeRequest.mode,
+            submitElapsedSeconds,
+            activeRequest.count,
+            activeRequest.variant,
+          )
         : null,
     [activeRequest, submitElapsedSeconds],
   );
-  const waitingDots = useMemo(() => buildWaitingDots(submitElapsedSeconds), [submitElapsedSeconds]);
+  const waitingDots = useMemo(
+    () => buildWaitingDots(submitElapsedSeconds),
+    [submitElapsedSeconds],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 1024px)");
+    const updateLayout = (matches: boolean) => {
+      setIsDesktopLayout(matches);
+    };
+
+    updateLayout(media.matches);
+    const handleChange = (event: MediaQueryListEvent) =>
+      updateLayout(event.matches);
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", handleChange);
+      return () => media.removeEventListener("change", handleChange);
+    }
+
+    media.addListener(handleChange);
+    return () => media.removeListener(handleChange);
   }, []);
 
   useEffect(() => {
@@ -538,17 +762,25 @@ export default function ImagePage() {
   useEffect(() => {
     const loadQuota = async () => {
       try {
-        const [accountsData, configData] = await Promise.all([fetchAccounts(), fetchConfig()]);
+        const [accountsData, configData] = await Promise.all([
+          fetchAccounts(),
+          fetchConfig(),
+        ]);
         const allowDisabled =
-          configData.chatgpt.imageMode === "studio" && configData.chatgpt.studioAllowDisabledImageAccounts;
-        setIsCPAImageMode(configData.chatgpt.imageMode === "cpa");
+          configData.chatgpt.imageMode === "studio" &&
+          configData.chatgpt.studioAllowDisabledImageAccounts;
         setAllowDisabledStudioAccounts(allowDisabled);
+        setConfiguredImageMode(configData.chatgpt.imageMode);
+        setConfiguredFreeImageRoute(configData.chatgpt.freeImageRoute);
         setAvailableAccounts(accountsData.items);
-        setAvailableQuota(formatAvailableQuota(accountsData.items, allowDisabled));
+        setAvailableQuota(
+          formatAvailableQuota(accountsData.items, allowDisabled),
+        );
       } catch {
         setAvailableAccounts([]);
-        setIsCPAImageMode(false);
         setAllowDisabledStudioAccounts(false);
+        setConfiguredImageMode("studio");
+        setConfiguredFreeImageRoute("legacy");
         setAvailableQuota((prev) => (prev === "加载中" ? "—" : prev));
       }
     };
@@ -561,36 +793,92 @@ export default function ImagePage() {
   }, []);
 
   useEffect(() => {
-    const selectedPreset = currentResolutionPresets.find((item) => item.tier === imageResolutionTier);
-    if (selectedPreset && (hasAvailablePaidAccount || selectedPreset.access === "free")) {
+    const selectedPreset = currentResolutionPresets.find(
+      (item) => item.tier === imageResolutionTier,
+    );
+    if (
+      selectedPreset &&
+      (hasAvailablePaidAccount || selectedPreset.access === "free")
+    ) {
       return;
     }
-    const nextPreset = currentResolutionPresets.find((item) => hasAvailablePaidAccount || item.access === "free");
+    const nextPreset = currentResolutionPresets.find(
+      (item) => hasAvailablePaidAccount || item.access === "free",
+    );
     if (nextPreset && nextPreset.tier !== imageResolutionTier) {
       setImageResolutionTier(nextPreset.tier);
     }
   }, [currentResolutionPresets, hasAvailablePaidAccount, imageResolutionTier]);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
-    const viewport = resultsViewportRef.current;
-    if (!viewport) {
-      return;
+  useEffect(() => {
+    if (!isImageQualityEnabled && imageQuality !== "high") {
+      setImageQuality("high");
     }
+  }, [imageQuality, isImageQualityEnabled]);
 
-    viewport.scrollTo({
-      top: viewport.scrollHeight,
-      behavior,
-    });
-  }, []);
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = "smooth") => {
+      if (isStandaloneWorkspace) {
+        const scrollTarget = document.scrollingElement;
+        if (!scrollTarget) {
+          return;
+        }
+
+        window.scrollTo({
+          top: scrollTarget.scrollHeight,
+          behavior,
+        });
+        return;
+      }
+
+      const viewport = resultsViewportRef.current;
+      if (!viewport) {
+        return;
+      }
+
+      viewport.scrollTo({
+        top: viewport.scrollHeight,
+        behavior,
+      });
+    },
+    [isStandaloneWorkspace],
+  );
 
   useEffect(() => {
+    if (isStandaloneWorkspace) {
+      const updateScrollState = () => {
+        const scrollTarget = document.scrollingElement;
+        if (!scrollTarget) {
+          return;
+        }
+        const scrollTop = window.scrollY || scrollTarget.scrollTop;
+        const viewportHeight = window.innerHeight;
+        const hiddenHeight =
+          scrollTarget.scrollHeight - viewportHeight - scrollTop;
+        const hasOverflow = scrollTarget.scrollHeight > viewportHeight + 24;
+        const nearBottom = hiddenHeight <= 96;
+        isNearBottomRef.current = nearBottom;
+        setShowScrollToBottom(hasOverflow && !nearBottom);
+      };
+
+      updateScrollState();
+      window.addEventListener("scroll", updateScrollState, { passive: true });
+      window.addEventListener("resize", updateScrollState);
+
+      return () => {
+        window.removeEventListener("scroll", updateScrollState);
+        window.removeEventListener("resize", updateScrollState);
+      };
+    }
+
     const viewport = resultsViewportRef.current;
     if (!viewport) {
       return;
     }
 
     const updateScrollState = () => {
-      const hiddenHeight = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop;
+      const hiddenHeight =
+        viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop;
       const hasOverflow = viewport.scrollHeight > viewport.clientHeight + 24;
       const nearBottom = hiddenHeight <= 96;
       isNearBottomRef.current = nearBottom;
@@ -605,12 +893,20 @@ export default function ImagePage() {
       viewport.removeEventListener("scroll", updateScrollState);
       window.removeEventListener("resize", updateScrollState);
     };
-  }, [selectedConversationId, selectedConversationTurns.length, selectedConversationLastTurnKey]);
+  }, [
+    isStandaloneWorkspace,
+    selectedConversationId,
+    selectedConversationTurns.length,
+    selectedConversationLastTurnKey,
+  ]);
 
   useEffect(() => {
-    const conversationChanged = previousSelectedConversationIdRef.current !== selectedConversationId;
-    const turnCountIncreased = selectedConversationTurns.length > previousTurnCountRef.current;
-    const lastTurnChanged = previousLastTurnKeyRef.current !== selectedConversationLastTurnKey;
+    const conversationChanged =
+      previousSelectedConversationIdRef.current !== selectedConversationId;
+    const turnCountIncreased =
+      selectedConversationTurns.length > previousTurnCountRef.current;
+    const lastTurnChanged =
+      previousLastTurnKeyRef.current !== selectedConversationLastTurnKey;
 
     previousSelectedConversationIdRef.current = selectedConversationId;
     previousTurnCountRef.current = selectedConversationTurns.length;
@@ -620,7 +916,11 @@ export default function ImagePage() {
       return;
     }
 
-    if (!conversationChanged && !turnCountIncreased && !(lastTurnChanged && isNearBottomRef.current)) {
+    if (
+      !conversationChanged &&
+      !turnCountIncreased &&
+      !(lastTurnChanged && isNearBottomRef.current)
+    ) {
       return;
     }
 
@@ -641,12 +941,31 @@ export default function ImagePage() {
   ]);
 
   useEffect(() => {
+    if (!isStandaloneWorkspace || !selectedConversationId) {
+      return;
+    }
+
+    const firstFrame = window.requestAnimationFrame(() => {
+      const secondFrame = window.requestAnimationFrame(() => {
+        scrollToBottom("auto");
+      });
+      return () => window.cancelAnimationFrame(secondFrame);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+    };
+  }, [isStandaloneWorkspace, scrollToBottom, selectedConversationId]);
+
+  useEffect(() => {
     if (!isSubmitting || submitStartedAt === null) {
       return;
     }
 
     const updateElapsed = () => {
-      setSubmitElapsedSeconds(Math.max(0, Math.floor((Date.now() - submitStartedAt) / 1000)));
+      setSubmitElapsedSeconds(
+        Math.max(0, Math.floor((Date.now() - submitStartedAt) / 1000)),
+      );
     };
 
     updateElapsed();
@@ -663,38 +982,153 @@ export default function ImagePage() {
     }
 
     textarea.style.height = "auto";
-    const maxHeight = Math.min(480, Math.max(260, Math.floor(window.innerHeight * 0.42)));
+    const maxHeight = Math.min(
+      480,
+      Math.max(260, Math.floor(window.innerHeight * 0.42)),
+    );
     textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
   }, [imagePrompt, mode]);
 
-  const persistConversation = useCallback(async (conversation: ImageConversation) => {
-    const normalizedConversation = normalizeConversation(conversation);
-    await saveImageConversation(normalizedConversation);
-    if (!mountedRef.current) {
-      return;
-    }
-    draftSelectionRef.current = false;
-    setSelectedConversationId(normalizedConversation.id);
-    setConversations((prev) => {
-      const next = [normalizedConversation, ...prev.filter((item) => item.id !== normalizedConversation.id)];
-      return next.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    });
-    syncRuntimeTaskState(normalizedConversation.id);
-  }, [setConversations, setSelectedConversationId, syncRuntimeTaskState]);
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("chatgpt-image-studio:mobile-workspace-title", {
+        detail: { title: selectedConversation?.title ?? null },
+      }),
+    );
+  }, [selectedConversation?.title]);
 
-  const updateConversation = useCallback(async (
-    conversationId: string,
-    updater: (current: ImageConversation | null) => ImageConversation,
-  ) => {
-    const nextConversation = await updateImageConversation(conversationId, updater);
-    if (!mountedRef.current) {
-      return;
-    }
-    setConversations((prev) => {
-      const next = [nextConversation, ...prev.filter((item) => item.id !== conversationId)];
-      return next.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const persistConversation = useCallback(
+    async (conversation: ImageConversation) => {
+      const normalizedConversation = normalizeConversation(conversation);
+      await saveImageConversation(normalizedConversation);
+      if (!mountedRef.current) {
+        return;
+      }
+      draftSelectionRef.current = false;
+      setSelectedConversationId(normalizedConversation.id);
+      setConversations((prev) => {
+        const next = [
+          normalizedConversation,
+          ...prev.filter((item) => item.id !== normalizedConversation.id),
+        ];
+        return next.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      });
+      syncRuntimeTaskState(normalizedConversation.id);
+    },
+    [setConversations, setSelectedConversationId, syncRuntimeTaskState],
+  );
+
+  const updateConversation = useCallback(
+    async (
+      conversationId: string,
+      updater: (current: ImageConversation | null) => ImageConversation,
+    ) => {
+      const nextConversation = await updateImageConversation(
+        conversationId,
+        updater,
+      );
+      if (!mountedRef.current) {
+        return;
+      }
+      setConversations((prev) => {
+        const next = [
+          nextConversation,
+          ...prev.filter((item) => item.id !== conversationId),
+        ];
+        return next.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      });
+    },
+    [setConversations],
+  );
+
+  const resetComposer = useCallback(
+    (nextMode: ImageMode = mode) => {
+      setMode(nextMode);
+      setImagePrompt("");
+      setImageCount("1");
+      setSourceImages([]);
+    },
+    [mode, setSourceImages],
+  );
+
+  const openHistoryView = useCallback(() => {
+    navigate("/image/history");
+  }, [navigate]);
+
+  const openWorkspaceView = useCallback(() => {
+    navigate("/image/workspace");
+  }, [navigate]);
+
+  const handleCreateDraftAndOpenWorkspace = useCallback(() => {
+    handleCreateDraft(resetComposer, textareaRef);
+    openWorkspaceView();
+  }, [handleCreateDraft, openWorkspaceView, resetComposer]);
+
+  const handleFocusConversationAndOpenWorkspace = useCallback(
+    (conversationId: string) => {
+      focusConversation(conversationId);
+      openWorkspaceView();
+    },
+    [focusConversation, openWorkspaceView],
+  );
+
+  const applyPromptExample = useCallback(
+    (example: (typeof inspirationExamples)[number]) => {
+      setMode("generate");
+      setImageCount(String(example.count));
+      setImagePrompt(example.prompt);
+      openDraftConversation();
+      setSourceImages([]);
+      textareaRef.current?.focus();
+    },
+    [openDraftConversation, setSourceImages],
+  );
+
+  const { handleSelectionEditSubmit, handleRetryTurn, handleSubmit } =
+    useImageSubmit({
+      mode,
+      imagePrompt,
+      imageModel: "gpt-image-2",
+      imageSources,
+      maskSource,
+      sourceImages,
+      parsedCount,
+      imageSize,
+      imageQuality,
+      selectedConversationId,
+      editorTarget,
+      isSubmitting,
+      makeId,
+      focusConversation,
+      closeSelectionEditor,
+      setImagePrompt,
+      setSourceImages,
+      setIsSubmitting,
+      setActiveRequest,
+      setSubmitElapsedSeconds,
+      setSubmitStartedAt,
+      persistConversation,
+      updateConversation,
+      resetComposer,
     });
-  }, [setConversations]);
+
+  const historyPanel = (
+    <HistorySidebar
+      conversations={conversations}
+      selectedConversationId={selectedConversationId}
+      isLoadingHistory={isLoadingHistory}
+      hasActiveTasks={isSubmitting}
+      activeConversationIds={activeConversationIds}
+      modeLabelMap={modeLabelMap}
+      buildConversationPreviewSource={buildConversationPreviewSource}
+      formatConversationTime={formatConversationTime}
+      onCreateDraft={handleCreateDraftAndOpenWorkspace}
+      onClearHistory={handleClearHistory}
+      onFocusConversation={handleFocusConversationAndOpenWorkspace}
+      onDeleteConversation={handleDeleteConversation}
+      standalone={isStandaloneHistory}
+    />
+  );
 
   useEffect(() => {
     for (const conversation of conversations) {
@@ -781,157 +1215,143 @@ export default function ImagePage() {
     }
   }, [conversations, syncRuntimeTaskState, updateConversation]);
 
-  const resetComposer = useCallback((nextMode: ImageMode = mode) => {
-    setMode(nextMode);
-    setImagePrompt("");
-    setImageCount("1");
-    setUpscaleScale("2x");
-    setSourceImages([]);
-  }, [mode, setSourceImages]);
-
-  const applyPromptExample = useCallback((example: (typeof inspirationExamples)[number]) => {
-    setMode("generate");
-    setImageCount(String(example.count));
-    setImagePrompt(example.prompt);
-    openDraftConversation();
-    setSourceImages([]);
-    textareaRef.current?.focus();
-  }, [openDraftConversation, setSourceImages]);
-
-  const { handleSelectionEditSubmit, handleRetryTurn, handleSubmit } = useImageSubmit({
-    mode,
-    imagePrompt,
-    imageModel: "gpt-image-2",
-    imageSources,
-    maskSource,
-    sourceImages,
-    parsedCount,
-    imageSize,
-    imageQuality,
-    upscaleScale,
-    selectedConversationId,
-    editorTarget,
-    isSubmitting,
-    makeId,
-    focusConversation,
-    closeSelectionEditor,
-    setImagePrompt,
-    setSourceImages,
-    setIsSubmitting,
-    setActiveRequest,
-    setSubmitElapsedSeconds,
-    setSubmitStartedAt,
-    persistConversation,
-    updateConversation,
-    resetComposer,
-  });
-
-  return (
-    <section
+  const workspacePanel = (
+    <div
       className={cn(
-        "grid h-full min-h-0 grid-cols-1 gap-3",
-        historyCollapsed
-          ? "grid-rows-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)]"
-          : "grid-rows-[minmax(0,1fr)_auto] lg:grid-cols-[320px_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)]",
+        "order-1 flex flex-col overflow-visible lg:order-none lg:min-h-0 lg:overflow-hidden",
+        isStandaloneWorkspace
+          ? "rounded-none border-0 bg-transparent shadow-none"
+          : "rounded-[30px] border border-stone-200 bg-white shadow-[0_14px_40px_rgba(15,23,42,0.05)]",
       )}
     >
-      {!historyCollapsed ? (
-        <HistorySidebar
-          conversations={conversations}
-          selectedConversationId={selectedConversationId}
-          isLoadingHistory={isLoadingHistory}
-          hasActiveTasks={isSubmitting}
-          activeConversationIds={activeConversationIds}
-          modeLabelMap={modeLabelMap}
-          buildConversationPreviewSource={buildConversationPreviewSource}
-          formatConversationTime={formatConversationTime}
-          onCreateDraft={() => handleCreateDraft(resetComposer, textareaRef)}
-          onClearHistory={handleClearHistory}
-          onFocusConversation={focusConversation}
-          onDeleteConversation={handleDeleteConversation}
-        />
-      ) : null}
-
-      <div className="order-1 flex min-h-0 flex-col overflow-hidden rounded-[30px] border border-stone-200 bg-white shadow-[0_14px_40px_rgba(15,23,42,0.05)] lg:order-none">
+      {!isStandaloneWorkspace ? (
         <WorkspaceHeader
           historyCollapsed={historyCollapsed}
           selectedConversationTitle={selectedConversation?.title}
           onToggleHistory={() => setHistoryCollapsed((current) => !current)}
         />
+      ) : null}
 
-        <div className="relative min-h-0 flex-1 bg-[#fcfcfb]">
-          <div ref={resultsViewportRef} className="hide-scrollbar h-full min-h-0 overflow-y-auto">
-            {!selectedConversation ? (
-              <EmptyState inspirationExamples={inspirationExamples} onApplyPromptExample={applyPromptExample} />
-            ) : (
-              <ConversationTurns
-                conversationId={selectedConversation.id}
-                turns={selectedConversationTurns}
-                modeLabelMap={modeLabelMap}
-                activeRequest={activeRequest}
-                isSubmitting={isSubmitting}
-                processingStatus={processingStatus}
-                waitingDots={waitingDots}
-                submitElapsedSeconds={submitElapsedSeconds}
-                formatConversationTime={formatConversationTime}
-                formatProcessingDuration={formatProcessingDuration}
-                onOpenSelectionEditor={openSelectionEditor}
-                onSeedFromResult={seedFromResult}
-                onRetryTurn={handleRetryTurn}
-              />
-            )}
-          </div>
-          {showScrollToBottom ? (
-            <button
-              type="button"
-              onClick={() => scrollToBottom("smooth")}
-              className="absolute bottom-5 right-5 z-10 inline-flex size-11 items-center justify-center rounded-full border border-stone-200 bg-white/95 text-stone-700 shadow-lg shadow-stone-300/30 backdrop-blur transition hover:bg-white hover:text-stone-950"
-              aria-label="滚动到底部"
-              title="滚动到底部"
-            >
-              <ChevronsDown className="size-5" />
-            </button>
-          ) : null}
+      <div
+        className={cn(
+          "relative min-h-[240px] lg:min-h-0 lg:flex-1",
+          isStandaloneWorkspace ? "bg-transparent" : "bg-[#fcfcfb]",
+        )}
+      >
+        <div
+          ref={resultsViewportRef}
+          className={cn(
+            "hide-scrollbar min-h-[240px] overflow-visible lg:h-full lg:min-h-0 lg:overflow-y-auto lg:pb-0",
+            isMobileComposerCollapsed
+              ? "pb-[88px] sm:pb-[96px]"
+              : "pb-[320px] sm:pb-[340px]",
+          )}
+        >
+          {!selectedConversation ? (
+            <EmptyState
+              inspirationExamples={inspirationExamples}
+              onApplyPromptExample={applyPromptExample}
+            />
+          ) : (
+            <ConversationTurns
+              conversationId={selectedConversation.id}
+              turns={selectedConversationTurns}
+              modeLabelMap={modeLabelMap}
+              activeRequest={activeRequest}
+              isSubmitting={isSubmitting}
+              processingStatus={processingStatus}
+              waitingDots={waitingDots}
+              submitElapsedSeconds={submitElapsedSeconds}
+              formatConversationTime={formatConversationTime}
+              formatProcessingDuration={formatProcessingDuration}
+              onOpenSelectionEditor={openSelectionEditor}
+              onSeedFromResult={seedFromResult}
+              onRetryTurn={handleRetryTurn}
+            />
+          )}
         </div>
-
-        <PromptComposer
-          mode={mode}
-          modeOptions={modeOptions}
-          imageCount={imageCount}
-          imageAspectRatio={imageAspectRatio}
-          imageAspectRatioOptions={imageAspectRatioOptions}
-          imageResolutionTier={imageResolutionTier}
-          imageResolutionTierLabel={imageResolutionTierLabel}
-          imageResolutionTierOptions={imageResolutionTierOptions}
-          imageSizeHint={imageSizeHint}
-          imageQuality={imageQuality}
-          imageQualityOptions={imageQualityOptions}
-          upscaleScale={upscaleScale}
-          upscaleOptions={upscaleOptions}
-          hasGenerateReferences={hasGenerateReferences}
-          availableQuota={availableQuota}
-          sourceImages={sourceImages}
-          imagePrompt={imagePrompt}
-          isSubmitting={isSubmitting}
-          textareaRef={textareaRef}
-          uploadInputRef={uploadInputRef}
-          maskInputRef={maskInputRef}
-          onModeChange={setMode}
-          onImageCountChange={setImageCount}
-          onImageAspectRatioChange={(value) => setImageAspectRatio(value as ImageAspectRatio)}
-          onImageResolutionTierChange={(value) => setImageResolutionTier(value as ImageResolutionTier)}
-          onImageQualityChange={(value) => setImageQuality(value as ImageQuality)}
-          onUpscaleScaleChange={setUpscaleScale}
-          onPromptChange={setImagePrompt}
-          onPromptPaste={handlePromptPaste}
-          onRemoveSourceImage={removeSourceImage}
-          onAppendFiles={appendFiles}
-          onSubmit={handleSubmit}
-        />
+        {showScrollToBottom ? (
+          <button
+            type="button"
+            onClick={() => scrollToBottom("smooth")}
+            className={cn(
+              "absolute right-4 z-10 inline-flex size-11 items-center justify-center rounded-full border border-stone-200 bg-white/95 text-stone-700 shadow-lg shadow-stone-300/30 backdrop-blur transition hover:bg-white hover:text-stone-950 sm:right-5 lg:bottom-5",
+              isMobileComposerCollapsed
+                ? "bottom-[72px] sm:bottom-[80px]"
+                : "bottom-[228px] sm:bottom-[244px]",
+            )}
+            aria-label="滚动到底部"
+            title="滚动到底部"
+          >
+            <ChevronsDown className="size-5" />
+          </button>
+        ) : null}
       </div>
 
+      <PromptComposer
+        mode={mode}
+        modeOptions={modeOptions}
+        imageCount={imageCount}
+        imageAspectRatio={imageAspectRatio}
+        imageAspectRatioOptions={imageAspectRatioOptions}
+        imageResolutionTier={imageResolutionTier}
+        imageResolutionTierLabel={imageResolutionTierLabel}
+        imageResolutionTierOptions={imageResolutionTierOptions}
+        imageSizeHint={imageSizeHint}
+        imageQuality={imageQuality}
+        imageQualityOptions={imageQualityOptions}
+        imageQualityDisabled={!isImageQualityEnabled}
+        imageQualityDisabledReason={imageQualityDisabledReason}
+        hasGenerateReferences={hasGenerateReferences}
+        availableQuota={availableQuota}
+        sourceImages={sourceImages}
+        imagePrompt={imagePrompt}
+        isSubmitting={isSubmitting}
+        textareaRef={textareaRef}
+        uploadInputRef={uploadInputRef}
+        maskInputRef={maskInputRef}
+        onModeChange={setMode}
+        onImageCountChange={setImageCount}
+        onImageAspectRatioChange={(value) =>
+          setImageAspectRatio(value as ImageAspectRatio)
+        }
+        onImageResolutionTierChange={(value) =>
+          setImageResolutionTier(value as ImageResolutionTier)
+        }
+        onImageQualityChange={(value) => setImageQuality(value as ImageQuality)}
+        onPromptChange={setImagePrompt}
+        onPromptPaste={handlePromptPaste}
+        onRemoveSourceImage={removeSourceImage}
+        onOpenSourceSelectionEditor={openSourceSelectionEditor}
+        onAppendFiles={appendFiles}
+        onMobileCollapsedChange={setIsMobileComposerCollapsed}
+        onSubmit={handleSubmit}
+      />
+    </div>
+  );
+
+  return (
+    <section
+      className={cn(
+        "grid grid-cols-1 gap-3 lg:h-full lg:min-h-0",
+        isStandaloneHistory || isStandaloneWorkspace
+          ? "grid-rows-[auto]"
+          : historyCollapsed
+            ? "grid-rows-[auto] lg:grid-cols-[minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)]"
+            : "grid-rows-[auto_auto] lg:grid-cols-[320px_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)]",
+      )}
+    >
+      {isStandaloneHistory ? historyPanel : null}
+      {isStandaloneWorkspace ? workspacePanel : null}
+      {!isStandaloneHistory && !isStandaloneWorkspace ? (
+        <>
+          {!historyCollapsed ? historyPanel : null}
+          {workspacePanel}
+        </>
+      ) : null}
+
       <ImageEditModal
-        key={editorTarget?.turnId || "image-edit-modal"}
+        key={editorTarget?.imageName || "image-edit-modal"}
         open={Boolean(editorTarget)}
         imageName={editorTarget?.imageName || "image.png"}
         imageSrc={editorTarget?.sourceDataUrl || ""}

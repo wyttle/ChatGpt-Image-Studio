@@ -65,20 +65,25 @@ export function TooltipDetails({ items }: { items: TooltipDetail[] }) {
 export function ConfigSection({
   title,
   description,
+  actions,
   children,
 }: {
   title: string;
   description: string;
+  actions?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <Card className="border-stone-200 bg-white shadow-[0_18px_48px_rgba(15,23,42,0.05)]">
-      <CardContent className="space-y-5 p-6">
-        <div>
-          <div className="text-base font-semibold tracking-tight text-stone-900">{title}</div>
-          <p className="mt-1 text-sm leading-6 text-stone-500">{description}</p>
+      <CardContent className="space-y-4 p-4 sm:space-y-5 sm:p-6">
+        <div className="flex flex-col gap-2 sm:gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="text-[15px] font-semibold tracking-tight text-stone-900 sm:text-base">{title}</div>
+            <p className="mt-0.5 text-xs leading-5 text-stone-500 sm:mt-1 sm:text-sm sm:leading-6">{description}</p>
+          </div>
+          {actions ? <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:gap-2">{actions}</div> : null}
         </div>
-        <div className="grid gap-4 md:grid-cols-2">{children}</div>
+        <div className="grid gap-3 md:grid-cols-2 md:gap-4">{children}</div>
       </CardContent>
     </Card>
   );
@@ -98,12 +103,12 @@ export function Field({
   fullWidth?: boolean;
 }) {
   return (
-    <label className={fullWidth ? "space-y-2 md:col-span-2" : "space-y-2"}>
-      <div className="text-sm font-medium text-stone-700">
+    <label className={fullWidth ? "space-y-1.5 md:col-span-2 sm:space-y-2" : "space-y-1.5 sm:space-y-2"}>
+      <div className="text-[13px] font-medium text-stone-700 sm:text-sm">
         <LabelWithHint label={label} tooltip={tooltip ?? hint} />
       </div>
       <div>{children}</div>
-      <div className="text-xs leading-5 text-stone-400">{hint}</div>
+      <div className="hidden text-xs leading-5 text-stone-400 sm:block">{hint}</div>
     </label>
   );
 }
@@ -122,14 +127,14 @@ export function ToggleField({
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
-    <div className="rounded-2xl border border-stone-200 bg-stone-50/70 p-4 md:col-span-2">
-      <div className="flex items-start gap-3">
+    <div className="rounded-2xl border border-stone-200 bg-stone-50/70 p-3 md:col-span-2 sm:p-4">
+      <div className="flex items-start gap-2.5 sm:gap-3">
         <Checkbox checked={checked} onCheckedChange={(value) => onCheckedChange(Boolean(value))} />
         <div className="min-w-0">
-          <div className="text-sm font-medium text-stone-700">
+          <div className="text-[13px] font-medium text-stone-700 sm:text-sm">
             <LabelWithHint label={label} tooltip={tooltip ?? hint} />
           </div>
-          <div className="mt-1 text-xs leading-5 text-stone-400">{hint}</div>
+          <div className="mt-1 hidden text-xs leading-5 text-stone-400 sm:block">{hint}</div>
         </div>
       </div>
     </div>

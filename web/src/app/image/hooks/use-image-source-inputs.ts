@@ -6,12 +6,11 @@ import { toast } from "sonner";
 import type { ImageMode } from "@/store/image-conversations";
 import type { StoredImage, StoredSourceImage } from "@/store/image-conversations";
 
-import { buildImageDataUrl } from "../view-utils";
+import { buildImageDataUrl, buildSourceImageUrl } from "../view-utils";
 
 export type EditorTarget = {
-  conversationId: string;
-  turnId: string;
-  image: StoredImage;
+  conversationId: string | null;
+  image: StoredImage | null;
   imageName: string;
   sourceDataUrl: string;
 };
@@ -19,8 +18,8 @@ export type EditorTarget = {
 type UseImageSourceInputsOptions = {
   mode: ImageMode;
   isSubmitting: boolean;
+  selectedConversationId: string | null;
   setMode: (mode: ImageMode) => void;
-  setImagePrompt: (value: string) => void;
   focusConversation: (conversationId: string) => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   makeId: () => string;
@@ -35,11 +34,33 @@ async function fileToDataUrl(file: File) {
   });
 }
 
+function buildStoredSourceImageFromURL(payload: {
+  id: string;
+  role: "image" | "mask";
+  name: string;
+  url: string;
+}): StoredSourceImage {
+  if (payload.url.startsWith("data:")) {
+    return {
+      id: payload.id,
+      role: payload.role,
+      name: payload.name,
+      dataUrl: payload.url,
+    };
+  }
+  return {
+    id: payload.id,
+    role: payload.role,
+    name: payload.name,
+    url: payload.url,
+  };
+}
+
 export function useImageSourceInputs({
   mode,
   isSubmitting,
+  selectedConversationId,
   setMode,
-  setImagePrompt,
   focusConversation,
   textareaRef,
   makeId,
@@ -64,18 +85,9 @@ export function useImageSourceInputs({
       if (role === "mask") {
         return [...prev.filter((item) => item.role !== "mask"), nextItems[0]];
       }
-      if (mode === "upscale") {
-        return [
-          ...prev.filter((item) => item.role === "mask"),
-          {
-            ...nextItems[0],
-            name: nextItems[0]?.name || "upscale.png",
-          },
-        ];
-      }
       return [...prev.filter((item) => item.role !== "mask"), ...prev.filter((item) => item.role === "mask"), ...nextItems];
     });
-  }, [makeId, mode]);
+  }, [makeId]);
 
   const handlePromptPaste = useCallback((event: ReactClipboardEvent<HTMLTextAreaElement>) => {
     if (isSubmitting) {
@@ -95,9 +107,7 @@ export function useImageSourceInputs({
     toast.success(
       mode === "generate"
         ? "已从剪贴板添加参考图"
-        : mode === "edit"
-          ? "已从剪贴板添加源图"
-          : "已从剪贴板添加放大源图",
+        : "已从剪贴板添加源图",
     );
   }, [appendFiles, isSubmitting, mode]);
 
@@ -114,20 +124,17 @@ export function useImageSourceInputs({
     focusConversation(conversationId);
     setMode(nextMode);
     setSourceImages([
-      {
+      buildStoredSourceImageFromURL({
         id: makeId(),
         role: "image",
         name: "source.png",
-        dataUrl,
-      },
+        url: dataUrl,
+      }),
     ]);
-    if (nextMode === "upscale") {
-      setImagePrompt("");
-    }
     textareaRef.current?.focus();
-  }, [focusConversation, makeId, setImagePrompt, setMode, textareaRef]);
+  }, [focusConversation, makeId, setMode, textareaRef]);
 
-  const openSelectionEditor = useCallback((conversationId: string, turnId: string, image: StoredImage, imageName: string) => {
+  const openSelectionEditor = useCallback((conversationId: string, _turnId: string, image: StoredImage, imageName: string) => {
     const dataUrl = buildImageDataUrl(image);
     if (!dataUrl) {
       toast.error("当前图片没有可复用的数据");
@@ -135,12 +142,31 @@ export function useImageSourceInputs({
     }
     setEditorTarget({
       conversationId,
-      turnId,
       image,
       imageName,
       sourceDataUrl: dataUrl,
     });
   }, []);
+
+  const openSourceSelectionEditor = useCallback((sourceImageId: string) => {
+    const sourceImage = sourceImages.find((item) => item.id === sourceImageId && item.role === "image");
+    if (!sourceImage) {
+      toast.error("当前源图不可用于选区编辑");
+      return;
+    }
+    const sourceURL = buildSourceImageUrl(sourceImage);
+    if (!sourceURL) {
+      toast.error("当前源图不可用于选区编辑");
+      return;
+    }
+
+    setEditorTarget({
+      conversationId: selectedConversationId,
+      image: null,
+      imageName: sourceImage.name || "source.png",
+      sourceDataUrl: sourceURL,
+    });
+  }, [selectedConversationId, sourceImages]);
 
   const closeSelectionEditor = useCallback(() => {
     setEditorTarget(null);
@@ -156,6 +182,7 @@ export function useImageSourceInputs({
     removeSourceImage,
     seedFromResult,
     openSelectionEditor,
+    openSourceSelectionEditor,
     closeSelectionEditor,
   };
 }

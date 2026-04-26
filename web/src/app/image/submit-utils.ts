@@ -8,11 +8,11 @@ import type {
   StoredSourceImage,
 } from "@/store/image-conversations";
 
-export function buildConversationTitle(mode: ImageMode, prompt: string, scale: string) {
+export function buildConversationTitle(mode: ImageMode, prompt: string, scale = "") {
   const trimmed = prompt.trim();
-  const prefix = mode === "generate" ? "生成" : mode === "edit" ? "编辑" : `放大 ${scale}`;
+  const prefix = mode === "generate" ? "生成" : "编辑";
   if (!trimmed) {
-    return prefix;
+    return scale ? `${prefix} · ${scale}` : prefix;
   }
   if (trimmed.length <= 8) {
     return `${prefix} · ${trimmed}`;
@@ -72,6 +72,7 @@ export async function dataUrlToFile(dataUrl: string, fileName: string) {
 export function mergeResultImages(
   conversationId: string,
   items: Array<{
+    url?: string;
     b64_json?: string;
     revised_prompt?: string;
     file_id?: string;
@@ -83,11 +84,12 @@ export function mergeResultImages(
   expected: number,
 ) {
   const results: StoredImage[] = items.map((item, index) =>
-    item.b64_json
+    item.b64_json || item.url
       ? {
           id: `${conversationId}-${index}`,
           status: "success",
           b64_json: item.b64_json,
+          url: item.url,
           revised_prompt: item.revised_prompt,
           file_id: item.file_id,
           gen_id: item.gen_id,

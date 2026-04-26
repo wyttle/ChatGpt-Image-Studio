@@ -205,7 +205,7 @@ export function RuntimeSection({ config, setSection }: RuntimeSectionProps) {
               },
               {
                 title: "太小的表现",
-                body: <>编辑、放大或参考图上传会直接失败，即使图片本身格式没问题也会被拒绝。</>,
+                body: <>编辑或参考图上传会直接失败，即使图片本身格式没问题也会被拒绝。</>,
               },
             ]}
           />

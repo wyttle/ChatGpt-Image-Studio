@@ -9,6 +9,8 @@ Thumbs.db
 .runtime/
 .codex-logs/
 .git.broken*/
+.omc/
+.playwright-mcp/
 
 # Root artifacts
 *.log
@@ -39,7 +41,9 @@ Thumbs.db
 !/backend/data/auths/.gitkeep
 !/backend/data/sync_state/.gitkeep
 !/backend/data/tmp/
+/backend/data/tmp/*
 !/backend/data/tmp/image/
+/backend/data/tmp/image/*
 !/backend/data/tmp/image/.gitkeep
 
 # Local backend config copy (not used by runtime)

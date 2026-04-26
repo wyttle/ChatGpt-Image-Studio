@@ -18,13 +18,53 @@ ChatGpt Image Studio 是一个单服务交付的图片工作流项目：
 - 基于 `gpt-image-2` 的文本生图
 - 参考图生成与连续编辑
 - 选区涂抹式局部重绘
-- 图片放大与增强
+- 图片工作台支持会话历史、新建会话、失败重试、提示词复制与结果图下载
+- 支持按比例选择分辨率与质量档位，并区分 `Free` / `Paid` 可用输出档
 - 兼容图片场景的 `/v1/chat/completions` 与 `/v1/responses`
 - 本地认证文件导入与账号池管理
-- 额度查询与刷新
-- 与 CLIProxyAPI 兼容的 CPA 双向同步
-- 请求方向记录页，可区分官方与 CPA 链路
+- `Studio` 模式支持直接导入 `access_token`，并将 `Token` 账号与认证文件账号分开管理
+- 支持单账号刷新、一键批量刷新额度与刷新进度展示
+- 支持 `CPA / NewAPI / Sub2API` 多来源账号同步与推送
+- 请求记录页可区分官方与 CPA 链路，并记录 `size / quality / promptLength`
 - 配置管理页，可直接修改 `data/config.toml`
+
+## 图片工作台
+
+- 支持 `生成 / 编辑 / 选区编辑` 三种主流程
+- 支持移动端单页工作流：会话历史与工作台可分别进入，历史记录支持回到指定会话
+- 结果图支持：
+  - 下载
+  - 作为后续编辑源图继续改图
+  - 打开选区编辑器进行局部重绘
+- 用户消息支持一键复制，失败任务支持原位重试
+- 历史记录支持浏览器本地存储或服务端持久化
+
+## 数据存储
+
+当前项目支持把不同类型的数据拆分存储：
+
+- 账号池存储：`current / sqlite / redis`
+- 配置文件存储：`file / redis`
+- 图片会话记录：`browser / server`
+- 图片数据：`browser / server`
+
+说明：
+
+- `current` 表示沿用当前本地文件目录方案
+- `server` 表示由后端统一保存并对外提供图片 / 会话读取
+- 设置页支持迁移账号池、配置文件与图片会话历史
+- 无盘容器场景可配合 `redis` 保存配置与账号池
+
+## 账号池与同步
+
+- 支持导入本地认证文件
+- 支持在 `Studio` 模式下直接导入 `access_token`
+- `Token` 账号不会参与 `CPA / NewAPI / Sub2API` 的同步和推送
+- 支持单账号额度刷新与一键批量刷新全部额度
+- 批量刷新会限制并发，并在页面显示实时进度
+- 支持：
+  - 从 `CPA / NewAPI / Sub2API` 同步账号到本地
+  - 推送本地账号到 `CPA / NewAPI / Sub2API`
 
 ## 界面预览
 
@@ -122,7 +162,7 @@ docker compose up -d
 如需固定到某个版本，可先设置：
 
 ```bash
-export IMAGE_TAG=v1.2.7
+export IMAGE_TAG=v1.2.8
 docker compose pull
 docker compose up -d
 ```
@@ -130,10 +170,45 @@ docker compose up -d
 Windows PowerShell：
 
 ```powershell
-$env:IMAGE_TAG = "v1.2.7"
+$env:IMAGE_TAG = "v1.2.8"
 docker compose pull
 docker compose up -d
 ```
+
+### 无状态云部署（Redis 引导启动示例）
+
+如果你的云平台是无状态容器，重启后不会保留本地磁盘，可以把：
+
+- 账号池存到 Redis
+- 配置存到 Redis
+- 图片会话记录保留在浏览器
+- 图片数据保留在浏览器
+
+推荐启动方式：
+
+```bash
+docker run -d \
+  --name chatgpt-image-studio \
+  -p 7000:7000 \
+  -e SERVER_HOST=0.0.0.0 \
+  -e SERVER_PORT=7000 \
+  -e STORAGE_BACKEND=redis \
+  -e STORAGE_CONFIG_BACKEND=redis \
+  -e REDIS_ADDR=your-redis-host:6379 \
+  -e REDIS_PASSWORD=your-redis-password \
+  -e REDIS_DB=0 \
+  -e REDIS_PREFIX=chatgpt2api:studio \
+  -e STORAGE_IMAGE_CONVERSATION_STORAGE=browser \
+  -e STORAGE_IMAGE_DATA_STORAGE=browser \
+  -e TZ=Asia/Shanghai \
+  ghcr.io/peiyizhi0724/chatgpt-image-studio:latest
+```
+
+说明：
+
+- 这组环境变量的作用是让程序每次启动时都能先从 Redis 读取配置引导。
+- 启动成功后，其他配置仍可在页面“配置管理”中继续修改，并持久化到 Redis。
+- 如果没有持久化磁盘，不建议把 `image_conversation_storage` 或 `image_data_storage` 设为 `server`，否则服务端图片历史和图片文件在容器重建后仍会丢失。
 
 ### 一键更新
 
@@ -178,6 +253,12 @@ chmod +x ./scripts/docker-update.sh
 auth_key = "chatgpt2api"
 ```
 
+默认进入后台页面时使用的登录密码也是：
+
+- `chatgpt2api`
+
+如果你没有修改 `[app].auth_key`，首次进入时直接输入上面的默认密码即可。
+
 如果需要接入 CPA 同步：
 
 ```toml
@@ -218,6 +299,37 @@ paid_image_model = "gpt-5.4-mini"
   控制 `Plus / Pro / Team` 账号图片请求走哪条链路。
 - `paid_image_model`
   控制 `Plus / Pro / Team` 账号真正发给上游的模型名。
+
+如果需要把账号池与图片历史迁移到数据库或服务端模式，可在 `[storage]` 下补充：
+
+```toml
+[storage]
+backend = "sqlite"
+config_backend = "file"
+image_conversation_storage = "server"
+image_data_storage = "server"
+sqlite_path = "data/chatgpt-image-studio.db"
+```
+
+如果需要改用 Redis 保存账号池与配置，可继续补充：
+
+```toml
+[storage]
+backend = "redis"
+config_backend = "redis"
+redis_addr = "127.0.0.1:6379"
+redis_password = ""
+redis_db = 0
+redis_prefix = "chatgpt2api:studio"
+```
+
+对于无状态云容器，通常建议同时配合：
+
+```toml
+[storage]
+image_conversation_storage = "browser"
+image_data_storage = "browser"
+```
 
 ## 构建
 
@@ -322,25 +434,40 @@ $env:RUN_IMAGE_MODE_COMPAT_TESTS = "1"
 - `POST /api/accounts/import`
 - `DELETE /api/accounts`
 - `POST /api/accounts/refresh`
+- `POST /api/accounts/refresh-all`
+- `GET /api/accounts/refresh-progress`
 - `POST /api/accounts/update`
 - `GET /api/accounts/{id}/quota`
 
 ### 配置与请求记录
 
 - `GET /api/config`
+- `GET /api/config/defaults`
 - `PUT /api/config`
 - `GET /api/requests`
+- `POST /api/proxy/test`
+- `POST /api/integration/test`
+- `POST /api/integration/newapi/token`
+- `POST /api/integration/sub2api/groups`
 
 ### 同步
 
 - `GET /api/sync/status`
 - `POST /api/sync/run`
 
+### 图片历史
+
+- `GET /api/image/conversations`
+- `DELETE /api/image/conversations`
+- `POST /api/image/conversations/import`
+- `GET /api/image/conversations/{id}`
+- `PUT /api/image/conversations/{id}`
+- `DELETE /api/image/conversations/{id}`
+
 ### 图片接口
 
 - `POST /v1/images/generations`
 - `POST /v1/images/edits`
-- `POST /v1/images/upscale`
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
 - `GET /v1/models`

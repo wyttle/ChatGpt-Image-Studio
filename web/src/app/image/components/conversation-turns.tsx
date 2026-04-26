@@ -1,15 +1,32 @@
 "use client";
 
+import { memo } from "react";
 import Zoom from "react-medium-image-zoom";
-import { Brush, Clock3, Copy, Download, LoaderCircle, RotateCcw, Sparkles, ZoomIn } from "lucide-react";
+import {
+  Brush,
+  Clock3,
+  Copy,
+  Download,
+  LoaderCircle,
+  RotateCcw,
+  Sparkles,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { AppImage as Image } from "@/components/app-image";
 import { cn } from "@/lib/utils";
-import type { ImageConversationTurn, ImageMode, StoredImage } from "@/store/image-conversations";
+import type {
+  ImageConversationTurn,
+  ImageMode,
+  StoredImage,
+} from "@/store/image-conversations";
 
 import { formatImageErrorMessage } from "../submit-utils";
-import { buildConversationSourceLabel, buildImageDataUrl } from "../view-utils";
+import {
+  buildConversationSourceLabel,
+  buildImageDataUrl,
+  buildSourceImageUrl,
+} from "../view-utils";
 
 type ActiveRequestState = {
   conversationId: string;
@@ -25,7 +42,9 @@ type ProcessingStatus = {
 };
 
 function formatTurnSizeLabel(size?: string) {
-  return String(size || "").trim().replace("x", "X");
+  return String(size || "")
+    .trim()
+    .replace("x", "X");
 }
 
 function buildDownloadName(createdAt: string, turnId: string, index: number) {
@@ -82,12 +101,24 @@ type ConversationTurnsProps = {
   submitElapsedSeconds: number;
   formatConversationTime: (value: string) => string;
   formatProcessingDuration: (seconds: number) => string;
-  onOpenSelectionEditor: (conversationId: string, turnId: string, image: StoredImage, imageName: string) => void;
-  onSeedFromResult: (conversationId: string, image: StoredImage, nextMode: ImageMode) => void;
-  onRetryTurn: (conversationId: string, turn: ImageConversationTurn) => Promise<void>;
+  onOpenSelectionEditor: (
+    conversationId: string,
+    turnId: string,
+    image: StoredImage,
+    imageName: string,
+  ) => void;
+  onSeedFromResult: (
+    conversationId: string,
+    image: StoredImage,
+    nextMode: ImageMode,
+  ) => void;
+  onRetryTurn: (
+    conversationId: string,
+    turn: ImageConversationTurn,
+  ) => Promise<void>;
 };
 
-export function ConversationTurns({
+export const ConversationTurns = memo(function ConversationTurns({
   conversationId,
   turns,
   modeLabelMap,
@@ -103,13 +134,13 @@ export function ConversationTurns({
   onRetryTurn,
 }: ConversationTurnsProps) {
   return (
-    <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-8 px-4 py-8 sm:px-6">
+    <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-8 px-4 pt-0 pb-8 sm:px-6 sm:py-8">
       {turns.map((turn) => {
         const turnProcessing = Boolean(
           isSubmitting &&
-            activeRequest &&
-            activeRequest.conversationId === conversationId &&
-            activeRequest.turnId === turn.id,
+          activeRequest &&
+          activeRequest.conversationId === conversationId &&
+          activeRequest.turnId === turn.id,
         );
 
         return (
@@ -128,7 +159,7 @@ export function ConversationTurns({
                         </div>
                         <Zoom>
                           <Image
-                            src={source.dataUrl}
+                            src={buildSourceImageUrl(source)}
                             alt={source.name}
                             width={220}
                             height={160}
@@ -146,7 +177,9 @@ export function ConversationTurns({
                   </div>
                   <button
                     type="button"
-                    onClick={() => void copyPromptToClipboard(turn.prompt || "")}
+                    onClick={() =>
+                      void copyPromptToClipboard(turn.prompt || "")
+                    }
                     className="inline-flex h-7 shrink-0 items-center gap-1 rounded-full border border-stone-200 bg-white px-2.5 text-xs font-medium text-stone-500 opacity-0 shadow-sm transition hover:bg-stone-100 hover:text-stone-900 focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
                     title="复制提示词"
                     aria-label="复制提示词"
@@ -164,17 +197,37 @@ export function ConversationTurns({
                   <Sparkles className="size-4" />
                 </span>
                 <div>
-                  <div className="text-sm font-semibold tracking-tight text-stone-900">ChatGpt Image Studio</div>
+                  <div className="text-sm font-semibold tracking-tight text-stone-900">
+                    ChatGpt Image Studio
+                  </div>
                 </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 px-1 text-xs text-stone-500">
-                <span className="rounded-full bg-stone-100 px-3 py-1.5">{modeLabelMap[turn.mode]}</span>
-                <span className="rounded-full bg-stone-100 px-3 py-1.5">{turn.model}</span>
-                <span className="rounded-full bg-stone-100 px-3 py-1.5">{turn.count} 张</span>
-                {turn.size ? <span className="rounded-full bg-stone-100 px-3 py-1.5">{formatTurnSizeLabel(turn.size)}</span> : null}
-                {turn.quality ? <span className="rounded-full bg-stone-100 px-3 py-1.5">Quality {turn.quality}</span> : null}
-                {turn.scale ? <span className="rounded-full bg-stone-100 px-3 py-1.5">{turn.scale}</span> : null}
+                <span className="rounded-full bg-stone-100 px-3 py-1.5">
+                  {modeLabelMap[turn.mode]}
+                </span>
+                <span className="rounded-full bg-stone-100 px-3 py-1.5">
+                  {turn.model}
+                </span>
+                <span className="rounded-full bg-stone-100 px-3 py-1.5">
+                  {turn.count} 张
+                </span>
+                {turn.size ? (
+                  <span className="rounded-full bg-stone-100 px-3 py-1.5">
+                    {formatTurnSizeLabel(turn.size)}
+                  </span>
+                ) : null}
+                {turn.quality ? (
+                  <span className="rounded-full bg-stone-100 px-3 py-1.5">
+                    Quality {turn.quality}
+                  </span>
+                ) : null}
+                {turn.scale ? (
+                  <span className="rounded-full bg-stone-100 px-3 py-1.5">
+                    {turn.scale}
+                  </span>
+                ) : null}
                 <span className="rounded-full bg-stone-100 px-3 py-1.5">
                   <Clock3 className="mr-1 inline size-3.5" />
                   {formatConversationTime(turn.createdAt)}
@@ -185,22 +238,29 @@ export function ConversationTurns({
                 <div
                   className={cn(
                     "grid gap-4",
-                    turn.images.length === 1 ? "grid-cols-1" : "grid-cols-1 lg:grid-cols-2",
+                    turn.images.length === 1
+                      ? "grid-cols-1"
+                      : "grid-cols-1 lg:grid-cols-2",
                   )}
                 >
                   {turn.images.map((image, index) => {
                     const imageDataUrl = buildImageDataUrl(image);
-                    const downloadName = buildDownloadName(turn.createdAt, turn.id, index);
+                    const downloadName = buildDownloadName(
+                      turn.createdAt,
+                      turn.id,
+                      index,
+                    );
 
                     return (
                       <div
                         key={image.id}
                         className={cn(
                           "overflow-hidden rounded-[22px] border border-stone-200 bg-white shadow-sm",
-                          turn.images.length === 1 && "w-fit max-w-full justify-self-start",
+                          turn.images.length === 1 &&
+                            "w-fit max-w-full justify-self-start",
                         )}
                       >
-                        {image.status === "success" && image.b64_json ? (
+                        {image.status === "success" && imageDataUrl ? (
                           <div>
                             <Zoom>
                               <Image
@@ -232,20 +292,17 @@ export function ConversationTurns({
                               <button
                                 type="button"
                                 className="inline-flex size-9 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 transition hover:bg-stone-100 hover:text-stone-900"
-                                onClick={() => onSeedFromResult(conversationId, image, "edit")}
+                                onClick={() =>
+                                  onSeedFromResult(
+                                    conversationId,
+                                    image,
+                                    "edit",
+                                  )
+                                }
                                 title="引用"
                                 aria-label="引用"
                               >
                                 <Copy className="size-4" />
-                              </button>
-                              <button
-                                type="button"
-                                className="inline-flex size-9 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 transition hover:bg-stone-100 hover:text-stone-900"
-                                onClick={() => onSeedFromResult(conversationId, image, "upscale")}
-                                title="放大"
-                                aria-label="放大"
-                              >
-                                <ZoomIn className="size-4" />
                               </button>
                               <a
                                 href={imageDataUrl}
@@ -261,13 +318,17 @@ export function ConversationTurns({
                         ) : image.status === "error" ? (
                           <div className="flex min-h-[320px] flex-col">
                             <div className="flex flex-1 items-center justify-center whitespace-pre-line bg-rose-50 px-6 py-8 text-center text-sm leading-7 text-rose-600">
-                              {formatImageErrorMessage(image.error || "处理失败")}
+                              {formatImageErrorMessage(
+                                image.error || "处理失败",
+                              )}
                             </div>
                             <div className="flex flex-wrap items-center gap-2 border-t border-stone-100 px-4 py-3">
                               <button
                                 type="button"
                                 className="inline-flex size-9 items-center justify-center rounded-full border border-stone-200 bg-white text-rose-600 transition hover:bg-rose-50 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
-                                onClick={() => void onRetryTurn(conversationId, turn)}
+                                onClick={() =>
+                                  void onRetryTurn(conversationId, turn)
+                                }
                                 disabled={isSubmitting}
                                 title={isSubmitting ? "处理中" : "重试"}
                                 aria-label="重试"
@@ -304,4 +365,6 @@ export function ConversationTurns({
       })}
     </div>
   );
-}
+});
+
+ConversationTurns.displayName = "ConversationTurns";

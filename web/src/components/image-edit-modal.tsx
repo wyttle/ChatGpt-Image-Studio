@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Brush, Redo2, Trash2, Undo2, X } from "lucide-react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { ArrowUp, Brush, ChevronDown, LoaderCircle, Redo2, Trash2, Undo2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -114,25 +114,41 @@ export function ImageEditModal({
   const [redoStrokes, setRedoStrokes] = useState<Stroke[]>([]);
   const [currentStroke, setCurrentStroke] = useState<Stroke | null>(null);
   const [brushCursor, setBrushCursor] = useState<BrushCursor | null>(null);
+  const [isPromptExpanded, setIsPromptExpanded] = useState(false);
 
   const hasSelection = strokes.length > 0;
-  const helperText = useMemo(
-    () =>
-      selectionMode
-        ? "拖动鼠标涂抹需要修改的区域。导出的遮罩会只替换你选中的部分。"
-        : "点击右上角“选择”后，在图片上涂抹需要修改的区域。",
-    [selectionMode],
-  );
 
   useEffect(() => {
     if (!open) {
       return;
     }
 
-    const previousOverflow = document.body.style.overflow;
+    const scrollY = window.scrollY;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousBodyPosition = document.body.style.position;
+    const previousBodyTop = document.body.style.top;
+    const previousBodyWidth = document.body.style.width;
+    const previousBodyLeft = document.body.style.left;
+    const previousBodyRight = document.body.style.right;
+
+    document.documentElement.style.overflow = "hidden";
     document.body.style.overflow = "hidden";
+    document.body.style.position = "fixed";
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = "100%";
+    document.body.style.left = "0";
+    document.body.style.right = "0";
+
     return () => {
-      document.body.style.overflow = previousOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+      document.body.style.overflow = previousBodyOverflow;
+      document.body.style.position = previousBodyPosition;
+      document.body.style.top = previousBodyTop;
+      document.body.style.width = previousBodyWidth;
+      document.body.style.left = previousBodyLeft;
+      document.body.style.right = previousBodyRight;
+      window.scrollTo(0, scrollY);
     };
   }, [open]);
 
@@ -149,6 +165,7 @@ export function ImageEditModal({
     setRedoStrokes([]);
     setCurrentStroke(null);
     setBrushCursor(null);
+    setIsPromptExpanded(false);
   }, [open, imageSrc]);
 
   useEffect(() => {
@@ -434,90 +451,92 @@ export function ImageEditModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-white/95 backdrop-blur-sm">
-      <div className="flex h-full flex-col">
-        <header className="flex items-center justify-between border-b border-stone-200 px-5 py-4">
-          <div className="flex items-center gap-3">
+    <div className="fixed inset-0 z-50 overflow-hidden overscroll-none bg-white/95 backdrop-blur-sm">
+      <div className="flex h-full flex-col touch-auto">
+        <header className="border-b border-stone-200 px-4 py-3 sm:px-5 sm:py-4">
+          <div className="hide-scrollbar flex items-center gap-2 overflow-x-auto">
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex size-9 items-center justify-center rounded-full text-stone-500 transition hover:bg-stone-100 hover:text-stone-900"
+              className="inline-flex size-9 shrink-0 items-center justify-center rounded-full text-stone-500 transition hover:bg-stone-100 hover:text-stone-900"
             >
               <X className="size-5" />
             </button>
-            <div>
-              <div className="text-xl font-semibold tracking-tight text-stone-950">编辑选择</div>
-              <div className="text-sm text-stone-500">{imageName}</div>
-            </div>
-          </div>
 
-          <div className="flex items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
             <Button
               variant="outline"
               size="sm"
-              className="rounded-full"
+              className="h-9 w-9 rounded-full px-0 sm:h-10 sm:w-auto sm:px-4"
               onClick={handleUndo}
               disabled={!hasSelection || isSubmitting}
+              aria-label="撤销"
+              title="撤销"
             >
               <Undo2 className="size-4" />
-              撤销
+              <span className="hidden sm:inline">撤销</span>
             </Button>
             <Button
               variant="outline"
               size="sm"
-              className="rounded-full"
+              className="h-9 w-9 rounded-full px-0 sm:h-10 sm:w-auto sm:px-4"
               onClick={handleRedo}
               disabled={redoStrokes.length === 0 || isSubmitting}
+              aria-label="重做"
+              title="重做"
             >
               <Redo2 className="size-4" />
-              重做
+              <span className="hidden sm:inline">重做</span>
             </Button>
             <Button
               variant="outline"
               size="sm"
-              className="rounded-full"
+              className="h-9 w-9 rounded-full px-0 sm:h-10 sm:w-auto sm:px-4"
               onClick={handleClear}
               disabled={(!hasSelection && !currentStroke) || isSubmitting}
+              aria-label="清空"
+              title="清空"
             >
               <Trash2 className="size-4" />
-              清空
+              <span className="hidden sm:inline">清空</span>
             </Button>
             <Button
               variant={selectionMode ? "default" : "outline"}
               size="sm"
-              className={cn("rounded-full", selectionMode ? "bg-stone-950 text-white hover:bg-stone-800" : "")}
+              className={cn(
+                "h-9 rounded-full px-3 sm:h-10 sm:px-4",
+                selectionMode ? "bg-stone-950 text-white hover:bg-stone-800" : "",
+              )}
               onClick={() => setSelectionMode((value) => !value)}
               disabled={isSubmitting}
             >
               <Brush className="size-4" />
-              {selectionMode ? "正在选择" : "选择"}
+              <span>{selectionMode ? "选择中" : "选择"}</span>
             </Button>
+            </div>
           </div>
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 overflow-hidden px-4 py-4 sm:px-6 sm:py-6">
-          <div className="w-full max-w-[1200px] rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-stone-600">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <span>{helperText}</span>
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-medium uppercase tracking-[0.18em] text-stone-400">笔刷</span>
-                <Input
-                  type="range"
-                  min="16"
-                  max="96"
-                  step="2"
-                  value={brushSize}
-                  onChange={(event) => setBrushSize(Number(event.target.value))}
-                  className="h-8 w-[160px] border-0 bg-transparent px-0"
-                />
-                <span className="min-w-10 text-right text-sm font-medium text-stone-700">{brushSize}px</span>
-              </div>
+          <div className="w-full max-w-[1200px] rounded-2xl border border-stone-200 bg-stone-50 px-3 py-2.5 sm:px-4 sm:py-3">
+            <div className="flex items-center justify-end gap-3">
+              <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-stone-400 sm:text-xs">笔刷</span>
+              <Input
+                type="range"
+                min="16"
+                max="96"
+                step="2"
+                value={brushSize}
+                onChange={(event) => setBrushSize(Number(event.target.value))}
+                className="h-8 w-[128px] border-0 bg-transparent px-0 sm:w-[160px]"
+              />
+              <span className="min-w-9 text-right text-sm font-medium text-stone-700">{brushSize}px</span>
             </div>
           </div>
 
           <div
             ref={previewFrameRef}
-            className="flex min-h-0 w-full flex-1 items-center justify-center overflow-auto rounded-[28px] border border-stone-200 bg-[#f8f7f4] p-4 sm:p-6"
+            className="flex min-h-0 w-full flex-1 items-center justify-center overflow-auto rounded-[28px] border border-stone-200 bg-[#f8f7f4] p-3 touch-auto sm:p-6"
           >
             <div
               className="relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-2xl"
@@ -589,20 +608,62 @@ export function ImageEditModal({
           </div>
         </div>
 
-        <footer className="border-t border-stone-200 px-6 py-5">
-          <div className="mx-auto flex w-full max-w-[920px] items-end gap-4 rounded-[32px] border border-stone-200 bg-white px-5 py-4 shadow-[0_18px_48px_rgba(28,25,23,0.08)]">
-            <Textarea
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder="描述选区内要怎么改，比如“把这几个字改成愿此行·终抵群星，与方块之地，保留原版风格和排版质感”"
-              className="min-h-[88px] flex-1 resize-none rounded-none border-0 bg-transparent px-1 py-1 text-[15px] leading-7 shadow-none focus-visible:ring-0"
-            />
+        <footer className="border-t border-stone-200 px-4 py-3 sm:px-6 sm:py-5">
+          <div
+            className={cn(
+              "mx-auto flex w-full max-w-[920px] gap-3 rounded-[28px] border border-stone-200 bg-white px-3 py-2.5 shadow-[0_18px_48px_rgba(28,25,23,0.08)] sm:gap-4 sm:rounded-[32px] sm:px-5 sm:py-4",
+              isPromptExpanded ? "items-end" : "items-center",
+            )}
+          >
+            <div className="relative flex-1">
+              {isPromptExpanded ? (
+                <>
+                <button
+                  type="button"
+                  className="absolute right-0 top-0 inline-flex size-7 items-center justify-center rounded-full text-stone-400 transition hover:bg-stone-100 hover:text-stone-700 sm:hidden"
+                  onClick={() => {
+                    setIsPromptExpanded(false);
+                  }}
+                  aria-label="收起输入框"
+                  title="收起输入框"
+                >
+                  <ChevronDown className="size-4" />
+                </button>
+                <Textarea
+                  value={prompt}
+                  onChange={(event) => setPrompt(event.target.value)}
+                  onFocus={() => setIsPromptExpanded(true)}
+                  placeholder="描述要怎么改"
+                  className="min-h-[72px] max-h-[180px] resize-none overflow-y-auto rounded-none border-0 bg-transparent px-1 py-1 pr-8 text-[14px] leading-6 text-stone-900 shadow-none focus-visible:ring-0 sm:min-h-[88px] sm:max-h-none sm:text-[15px] sm:leading-7"
+                />
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="flex h-10 w-full items-center px-1 text-left text-[14px] leading-5 text-stone-400 sm:hidden"
+                    onClick={() => setIsPromptExpanded(true)}
+                  >
+                    <span className="block w-full truncate">{prompt.trim() || "描述要怎么改"}</span>
+                  </button>
+                  <Textarea
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    onFocus={() => setIsPromptExpanded(true)}
+                    placeholder="描述要怎么改"
+                    className="hidden min-h-[88px] resize-none rounded-none border-0 bg-transparent px-1 py-1 text-[15px] leading-7 text-stone-900 shadow-none focus-visible:ring-0 sm:block"
+                  />
+                </>
+              )}
+            </div>
             <Button
-              className="h-11 rounded-full bg-stone-950 px-5 text-white hover:bg-stone-800"
+              size="icon"
+              className="size-9 shrink-0 rounded-full bg-stone-950 text-white hover:bg-stone-800 sm:size-11"
               onClick={() => void handleSubmit()}
               disabled={isSubmitting}
+              aria-label="提交编辑"
             >
-              {isSubmitting ? "处理中..." : "提交编辑"}
+              {isSubmitting ? <LoaderCircle className="size-4 animate-spin sm:size-5" /> : <ArrowUp className="size-4 sm:size-5" />}
             </Button>
           </div>
         </footer>

@@ -1,9 +1,14 @@
 "use client";
 
+import { useState } from "react";
+import { LoaderCircle, PlugZap } from "lucide-react";
+import { toast } from "sonner";
+
+import { Button } from "@/components/ui/button";
 import type { Dispatch, SetStateAction } from "react";
 
 import { Input } from "@/components/ui/input";
-import type { ConfigPayload } from "@/lib/api";
+import { testProxy, type ConfigPayload } from "@/lib/api";
 
 import { ConfigSection, Field, ToggleField, TooltipDetails } from "./shared";
 
@@ -20,6 +25,24 @@ export function ServicePathsSection({
   resolvedStaticDir,
   startupErrorPath,
 }: ServicePathsSectionProps) {
+  const [isTestingProxy, setIsTestingProxy] = useState(false);
+
+  const handleTestProxy = async () => {
+    setIsTestingProxy(true);
+    try {
+      const result = await testProxy(config.proxy.url);
+      if (result.ok) {
+        toast.success(`代理可用，HTTP ${result.status}，耗时 ${result.latency} ms`);
+      } else {
+        toast.error(result.error || `代理测试失败，HTTP ${result.status}`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "代理测试失败");
+    } finally {
+      setIsTestingProxy(false);
+    }
+  };
+
   return (
     <ConfigSection title="服务与路径" description="发布版默认从可执行文件同级的 data/ 和 static/ 读写配置与静态资源，路径通常不建议频繁修改。">
       <Field
@@ -137,16 +160,28 @@ export function ServicePathsSection({
           />
         }
       >
-        <Input
-          value={config.proxy.url}
-          onChange={(event) =>
-            setConfig((current) => ({
-              ...current,
-              proxy: { ...current.proxy, url: event.target.value },
-            }))
-          }
-          className="h-11 rounded-2xl border-stone-200 bg-white shadow-none"
-        />
+        <div className="flex gap-2">
+          <Input
+            value={config.proxy.url}
+            onChange={(event) =>
+              setConfig((current) => ({
+                ...current,
+                proxy: { ...current.proxy, url: event.target.value },
+              }))
+            }
+            className="h-11 rounded-2xl border-stone-200 bg-white shadow-none"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            className="h-11 shrink-0 rounded-2xl border-stone-200 bg-white px-4 text-stone-700 shadow-none"
+            onClick={() => void handleTestProxy()}
+            disabled={isTestingProxy}
+          >
+            {isTestingProxy ? <LoaderCircle className="size-4 animate-spin" /> : <PlugZap className="size-4" />}
+            测试
+          </Button>
+        </div>
       </Field>
 
       <Field
@@ -326,44 +361,46 @@ export function ServicePathsSection({
         />
       </Field>
 
-      <Field
-        label="图片缓存目录"
-        hint="当前项目缓存返回图片的目录。"
-        tooltip={
-          <TooltipDetails
-            items={[
-              {
-                title: "填写示例",
-                body: (
-                  <>
-                    <code>data/tmp/image</code>。
-                  </>
-                ),
-              },
-              {
-                title: "作用",
-                body: <>后端生成的图片文件、临时下载内容和网关返回地址对应的文件通常会落到这里。</>,
-              },
-              {
-                title: "注意",
-                body: <>这个目录如果不可写，图片保存和 `url` 返回格式都可能出问题。</>,
-              },
-            ]}
-          />
-        }
-        fullWidth
-      >
-        <Input
-          value={config.storage.imageDir}
-          onChange={(event) =>
-            setConfig((current) => ({
-              ...current,
-              storage: { ...current.storage, imageDir: event.target.value },
-            }))
+      {config.storage.imageDataStorage === "server" ? (
+        <Field
+          label="服务器图片目录"
+          hint="仅在图片数据存储选择服务器目录时使用。"
+          tooltip={
+            <TooltipDetails
+              items={[
+                {
+                  title: "填写示例",
+                  body: (
+                    <>
+                      <code>data/tmp/image</code>。
+                    </>
+                  ),
+                },
+                {
+                  title: "作用",
+                  body: <>工作台图片、兼容接口返回的图片文件，以及网关图片地址对应的文件都会写到这里。</>,
+                },
+                {
+                  title: "注意",
+                  body: <>这个目录如果不可写，服务器图片存储和 `url` 返回格式都会出问题。</>,
+                },
+              ]}
+            />
           }
-          className="h-11 rounded-2xl border-stone-200 bg-white shadow-none"
-        />
-      </Field>
+          fullWidth
+        >
+          <Input
+            value={config.storage.imageDir}
+            onChange={(event) =>
+              setConfig((current) => ({
+                ...current,
+                storage: { ...current.storage, imageDir: event.target.value },
+              }))
+            }
+            className="h-11 rounded-2xl border-stone-200 bg-white shadow-none"
+          />
+        </Field>
+      ) : null}
 
       <Field
         label="配置根目录"

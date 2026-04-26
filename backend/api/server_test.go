@@ -1,14 +1,19 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"chatgpt2api/internal/accounts"
 	"chatgpt2api/internal/config"
+	"chatgpt2api/internal/imagehistory"
 )
 
 func TestShouldUseOfficialResponses(t *testing.T) {
@@ -79,6 +84,147 @@ func TestConfiguredImageRoute(t *testing.T) {
 	}
 }
 
+func TestMigrateImageFilesSkipsNestedTargetDirectory(t *testing.T) {
+	rootDir := t.TempDir()
+	cfg := config.New(rootDir)
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	server := NewServer(cfg, nil, nil)
+
+	oldDir := filepath.Join(rootDir, "data", "tmp", "image")
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(oldDir) returned error: %v", err)
+	}
+	sourcePath := filepath.Join(oldDir, "sample.png")
+	if err := os.WriteFile(sourcePath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile(sourcePath) returned error: %v", err)
+	}
+
+	previous := configPayload{}
+	previous.Storage.ImageDir = "data/tmp/image"
+	next := configPayload{}
+	next.Storage.ImageDir = "data/tmp/image/nested"
+
+	if err := server.migrateImageFilesIfNeeded(previous, next); err != nil {
+		t.Fatalf("migrateImageFilesIfNeeded() returned error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(rootDir, "data", "tmp", "image", "nested", "sample.png")); err != nil {
+		t.Fatalf("expected migrated file in nested dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, "data", "tmp", "image", "nested", "nested", "sample.png")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no recursive nested file, got err=%v", err)
+	}
+}
+
+func TestResolveImageFilePathFallsBackToOtherDataDirectories(t *testing.T) {
+	rootDir := t.TempDir()
+	cfg := config.New(rootDir)
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	cfg.Storage.ImageDir = "data/new-images"
+	server := NewServer(cfg, nil, nil)
+
+	legacyDir := filepath.Join(rootDir, "data", "old-images")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(legacyDir) returned error: %v", err)
+	}
+	legacyPath := filepath.Join(legacyDir, "kept.png")
+	if err := os.WriteFile(legacyPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile(legacyPath) returned error: %v", err)
+	}
+
+	got := server.resolveImageFilePath("kept.png")
+	if !strings.EqualFold(filepath.Clean(got), filepath.Clean(legacyPath)) {
+		t.Fatalf("resolveImageFilePath() = %q, want %q", got, legacyPath)
+	}
+}
+
+func TestImportImageConversationsIntoSQLiteTarget(t *testing.T) {
+	rootDir := t.TempDir()
+	cfg := config.New(rootDir)
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	cfg.App.AuthKey = "test-auth"
+	server := NewServer(cfg, nil, nil)
+
+	body := map[string]any{
+		"items": []map[string]any{
+			{
+				"id":        "conv-1",
+				"title":     "生成",
+				"mode":      "generate",
+				"prompt":    "test",
+				"model":     "gpt-image-2",
+				"count":     1,
+				"createdAt": "2026-04-26T00:00:00Z",
+				"status":    "success",
+				"turns": []map[string]any{
+					{
+						"id":        "turn-1",
+						"title":     "生成",
+						"mode":      "generate",
+						"prompt":    "test",
+						"model":     "gpt-image-2",
+						"count":     1,
+						"createdAt": "2026-04-26T00:00:00Z",
+						"status":    "success",
+						"images": []map[string]any{
+							{
+								"id":       "img-1",
+								"status":   "success",
+								"b64_json": "aW1hZ2U=",
+							},
+						},
+					},
+				},
+			},
+		},
+		"storage": map[string]any{
+			"backend":                  "sqlite",
+			"imageDir":                 "data/import-images",
+			"sqlitePath":               "data/import-history.sqlite",
+			"imageConversationStorage": "server",
+			"imageDataStorage":         "server",
+		},
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("Marshal() returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/image/conversations/import", bytes.NewReader(raw))
+	req.Header.Set("Authorization", "Bearer "+cfg.App.AuthKey)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	verifyCfg := config.New(rootDir)
+	verifyCfg.Storage.Backend = "sqlite"
+	verifyCfg.Storage.ImageDir = "data/import-images"
+	verifyCfg.Storage.SQLitePath = "data/import-history.sqlite"
+	store, err := imagehistory.NewStore(verifyCfg)
+	if err != nil {
+		t.Fatalf("NewStore(verify sqlite) returned error: %v", err)
+	}
+	defer store.Close()
+
+	items, err := store.List(req.Context())
+	if err != nil {
+		t.Fatalf("List() returned error: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "conv-1" {
+		t.Fatalf("imported items = %#v", items)
+	}
+}
+
 func TestConfiguredImageModeTreatsLegacyMixAsStudio(t *testing.T) {
 	server := &Server{
 		cfg: &config.Config{
@@ -90,6 +236,79 @@ func TestConfiguredImageModeTreatsLegacyMixAsStudio(t *testing.T) {
 
 	if got := server.configuredImageMode(); got != "studio" {
 		t.Fatalf("configuredImageMode() = %q, want %q", got, "studio")
+	}
+}
+
+func TestHandleCreateAccountsRejectsOutsideStudioMode(t *testing.T) {
+	rootDir := t.TempDir()
+	cfg := config.New(rootDir)
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	cfg.App.AuthKey = "test-auth"
+	cfg.ChatGPT.ImageMode = "cpa"
+
+	store, err := accounts.NewStore(cfg)
+	if err != nil {
+		t.Fatalf("NewStore() returned error: %v", err)
+	}
+	defer store.Close()
+
+	server := NewServer(cfg, store, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts", strings.NewReader(`{"tokens":["token-1"]}`))
+	req.Header.Set("Authorization", "Bearer "+cfg.App.AuthKey)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Studio") {
+		t.Fatalf("body = %s, want Studio mode error", rec.Body.String())
+	}
+}
+
+func TestHandleRefreshAllAccountsWithEmptyStoreFinishesImmediately(t *testing.T) {
+	rootDir := t.TempDir()
+	cfg := config.New(rootDir)
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	cfg.App.AuthKey = "test-auth"
+
+	store, err := accounts.NewStore(cfg)
+	if err != nil {
+		t.Fatalf("NewStore() returned error: %v", err)
+	}
+	defer store.Close()
+
+	server := NewServer(cfg, store, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts/refresh-all", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+cfg.App.AuthKey)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Progress *accountRefreshRunResult `json:"progress"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() returned error: %v", err)
+	}
+	if payload.Progress == nil {
+		t.Fatal("progress should not be nil")
+	}
+	if payload.Progress.Running {
+		t.Fatalf("progress.Running = true, want false")
+	}
+	if payload.Progress.Total != 0 || payload.Progress.Processed != 0 {
+		t.Fatalf("progress = %#v, want empty finished run", payload.Progress)
 	}
 }
 
@@ -199,6 +418,29 @@ func TestNormalizeGenerateImageSize(t *testing.T) {
 	}
 }
 
+func TestIsImageRateLimitError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "http 429", err: errors.New("backend-api failed: HTTP 429"), want: true},
+		{name: "too many requests", err: errors.New("Too Many Requests"), want: true},
+		{name: "rate limit", err: errors.New("rate limit exceeded"), want: true},
+		{name: "quota exceeded", err: errors.New("image generation quota exceeded"), want: true},
+		{name: "non rate error", err: errors.New("internal server error"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isImageRateLimitError(tt.err); got != tt.want {
+				t.Fatalf("isImageRateLimitError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStudioPaidResolutionUsesPaidAccount(t *testing.T) {
 	server, recorder := newImageModeCompatTestServerWithOptions(t, imageModeCompatScenario{
 		imageMode:   "studio",
@@ -261,5 +503,136 @@ func TestStudioPaidResolutionUsesPaidAccount(t *testing.T) {
 	}
 	if got := recorder.callSequence[len(recorder.callSequence)-1]; !strings.Contains(got, "token-paid") {
 		t.Fatalf("call sequence = %v, want paid token selected", recorder.callSequence)
+	}
+}
+
+func TestStudioRateLimitedAccountRetriesWithNextAccount(t *testing.T) {
+	server, recorder := newImageModeCompatTestServerWithOptions(t, imageModeCompatScenario{
+		imageMode:   "studio",
+		accountType: "Free",
+		freeRoute:   "legacy",
+		freeModel:   "auto",
+		paidRoute:   "responses",
+		paidModel:   "gpt-5.4-mini",
+	}, compatTestServerOptions{
+		accounts: []compatSeedAccount{
+			{
+				fileName:    "limited.json",
+				accessToken: "token-limited",
+				accountType: "Free",
+				priority:    100,
+				quota:       5,
+				status:      "正常",
+			},
+			{
+				fileName:    "fallback.json",
+				accessToken: "token-fallback",
+				accountType: "Free",
+				priority:    10,
+				quota:       5,
+				status:      "正常",
+			},
+		},
+		behavior: compatClientBehavior{
+			officialGenerateErrors: map[string]error{
+				"token-limited": errors.New("backend-api failed: HTTP 429 too many requests"),
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"test prompt","response_format":"b64_json"}`))
+	req.Header.Set("Authorization", "Bearer "+server.cfg.App.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	if len(recorder.callSequence) != 2 {
+		t.Fatalf("call sequence = %v, want two attempts", recorder.callSequence)
+	}
+	if !strings.Contains(recorder.callSequence[0], "token-limited") || !strings.Contains(recorder.callSequence[1], "token-fallback") {
+		t.Fatalf("call sequence = %v, want limited then fallback", recorder.callSequence)
+	}
+
+	limitedAccount, err := server.getStore().GetAccountByToken("token-limited")
+	if err != nil {
+		t.Fatalf("GetAccountByToken(limited) returned error: %v", err)
+	}
+	if limitedAccount.Status != "限流" {
+		t.Fatalf("limited account status = %q, want %q", limitedAccount.Status, "限流")
+	}
+	if limitedAccount.Quota != 0 {
+		t.Fatalf("limited account quota = %d, want 0", limitedAccount.Quota)
+	}
+}
+
+func TestStudioResponsesRateLimitedAccountRetriesWithNextAccount(t *testing.T) {
+	server, recorder := newImageModeCompatTestServerWithOptions(t, imageModeCompatScenario{
+		imageMode:   "studio",
+		accountType: "Plus",
+		freeRoute:   "legacy",
+		freeModel:   "auto",
+		paidRoute:   "responses",
+		paidModel:   "gpt-5.4-mini",
+	}, compatTestServerOptions{
+		accounts: []compatSeedAccount{
+			{
+				fileName:    "limited-paid.json",
+				accessToken: "token-limited-paid",
+				accountType: "Plus",
+				priority:    100,
+				quota:       5,
+				status:      "正常",
+			},
+			{
+				fileName:    "fallback-paid.json",
+				accessToken: "token-fallback-paid",
+				accountType: "Plus",
+				priority:    10,
+				quota:       5,
+				status:      "正常",
+			},
+		},
+		behavior: compatClientBehavior{
+			responsesGenerateErrors: map[string]error{
+				"token-limited-paid": errors.New("responses failed: HTTP 429 too many requests"),
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"test prompt","size":"2560x1440","quality":"high","response_format":"b64_json"}`))
+	req.Header.Set("Authorization", "Bearer "+server.cfg.App.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	if recorder.lastFactory != "responses" {
+		t.Fatalf("last factory = %q, want %q", recorder.lastFactory, "responses")
+	}
+	if len(recorder.callSequence) != 2 {
+		t.Fatalf("call sequence = %v, want two attempts", recorder.callSequence)
+	}
+	if !strings.Contains(recorder.callSequence[0], "token-limited-paid") || !strings.Contains(recorder.callSequence[1], "token-fallback-paid") {
+		t.Fatalf("call sequence = %v, want limited then fallback responses account", recorder.callSequence)
+	}
+
+	limitedAccount, err := server.getStore().GetAccountByToken("token-limited-paid")
+	if err != nil {
+		t.Fatalf("GetAccountByToken(limited paid) returned error: %v", err)
+	}
+	if limitedAccount.Status != "限流" {
+		t.Fatalf("limited paid account status = %q, want %q", limitedAccount.Status, "限流")
+	}
+	if limitedAccount.Quota != 0 {
+		t.Fatalf("limited paid account quota = %d, want 0", limitedAccount.Quota)
 	}
 }

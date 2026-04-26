@@ -50,10 +50,20 @@ prefer_remote_refresh = true
 refresh_workers = 6
 
 [storage]
+backend = "current"
+config_backend = "file"
 auth_dir = "data/auths"
 state_file = "data/accounts_state.json"
 sync_state_dir = "data/sync_state"
 image_dir = "data/tmp/image"
+image_storage = "browser"
+image_conversation_storage = "browser"
+image_data_storage = "browser"
+sqlite_path = "data/chatgpt-image-studio.db"
+redis_addr = "127.0.0.1:6379"
+redis_password = ""
+redis_db = 0
+redis_prefix = "chatgpt2api:studio"
 
 # CLIProxyAPI / CPA 同步配置。
 # 如果你暂时不需要远端号池同步，请保持 enabled=false。
@@ -82,6 +92,23 @@ base_url = ""
 api_key = ""
 request_timeout = 60
 route_strategy = "images_api"
+
+[newapi]
+base_url = ""
+username = ""
+password = ""
+access_token = ""
+user_id = 0
+session_cookie = ""
+request_timeout = 20
+
+[sub2api]
+base_url = ""
+email = ""
+password = ""
+api_key = ""
+group_id = ""
+request_timeout = 20
 
 [log]
 log_all_requests = false

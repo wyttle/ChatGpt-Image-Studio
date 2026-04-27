@@ -28,6 +28,7 @@ type imageRequestLogEntry struct {
 	Size           string `json:"size,omitempty"`
 	Quality        string `json:"quality,omitempty"`
 	PromptLength   int    `json:"promptLength,omitempty"`
+	RequestBody    any    `json:"requestBody,omitempty"`
 	Preferred      bool   `json:"preferred"`
 	Success        bool   `json:"success"`
 	Error          string `json:"error,omitempty"`

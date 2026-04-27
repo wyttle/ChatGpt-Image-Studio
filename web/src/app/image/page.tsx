@@ -12,6 +12,7 @@ import {
   fetchImageTask,
   waitForImageTask,
   type Account,
+  type ImageAdvancedOptions,
   type ImageQuality,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -427,6 +428,8 @@ export default function ImagePage() {
   const [imageResolutionTier, setImageResolutionTier] =
     useState<ImageResolutionTier>("sd");
   const [imageQuality, setImageQuality] = useState<ImageQuality>("high");
+  const [imageAdvancedOptions, setImageAdvancedOptions] =
+    useState<ImageAdvancedOptions>({});
   const [historyCollapsed, setHistoryCollapsed] = useState(false);
   const [isDesktopLayout, setIsDesktopLayout] = useState(() =>
     typeof window !== "undefined"
@@ -1095,6 +1098,7 @@ export default function ImagePage() {
       parsedCount,
       imageSize,
       imageQuality,
+      imageAdvancedOptions,
       selectedConversationId,
       editorTarget,
       isSubmitting,
@@ -1299,6 +1303,7 @@ export default function ImagePage() {
         imageResolutionTierOptions={imageResolutionTierOptions}
         imageSizeHint={imageSizeHint}
         imageQuality={imageQuality}
+        imageAdvancedOptions={imageAdvancedOptions}
         imageQualityOptions={imageQualityOptions}
         imageQualityDisabled={!isImageQualityEnabled}
         imageQualityDisabledReason={imageQualityDisabledReason}
@@ -1319,6 +1324,7 @@ export default function ImagePage() {
           setImageResolutionTier(value as ImageResolutionTier)
         }
         onImageQualityChange={(value) => setImageQuality(value as ImageQuality)}
+        onImageAdvancedOptionsChange={setImageAdvancedOptions}
         onPromptChange={setImagePrompt}
         onPromptPaste={handlePromptPaste}
         onRemoveSourceImage={removeSourceImage}

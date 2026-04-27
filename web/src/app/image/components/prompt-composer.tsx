@@ -15,7 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { ImageQuality } from "@/lib/api";
+import type { ImageAdvancedOptions, ImageQuality } from "@/lib/api";
 import type { ImageMode, StoredSourceImage } from "@/store/image-conversations";
 import { cn } from "@/lib/utils";
 import { buildSourceImageUrl } from "../view-utils";
@@ -31,6 +31,7 @@ type PromptComposerProps = {
   imageResolutionTierOptions: Array<{ label: string; value: string; disabled?: boolean }>;
   imageSizeHint: ReactNode;
   imageQuality: ImageQuality;
+  imageAdvancedOptions: ImageAdvancedOptions;
   imageQualityOptions: Array<{ label: string; value: ImageQuality; description: string }>;
   imageQualityDisabled: boolean;
   imageQualityDisabledReason: string;
@@ -47,6 +48,7 @@ type PromptComposerProps = {
   onImageAspectRatioChange: (value: string) => void;
   onImageResolutionTierChange: (value: string) => void;
   onImageQualityChange: (value: string) => void;
+  onImageAdvancedOptionsChange: (value: ImageAdvancedOptions) => void;
   onPromptChange: (value: string) => void;
   onPromptPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void;
   onRemoveSourceImage: (id: string) => void;
@@ -67,6 +69,7 @@ export function PromptComposer({
   imageResolutionTierOptions,
   imageSizeHint,
   imageQuality,
+  imageAdvancedOptions,
   imageQualityOptions,
   imageQualityDisabled,
   imageQualityDisabledReason,
@@ -83,6 +86,7 @@ export function PromptComposer({
   onImageAspectRatioChange,
   onImageResolutionTierChange,
   onImageQualityChange,
+  onImageAdvancedOptionsChange,
   onPromptChange,
   onPromptPaste,
   onRemoveSourceImage,
@@ -95,6 +99,9 @@ export function PromptComposer({
   const showImageOutputControls = mode === "edit" || (mode === "generate" && !hasGenerateReferences);
   const sizeHintAriaLabel = mode === "edit" ? "查看编辑输出说明" : "查看分辨率说明";
   const imageQualityPrefix = mode === "edit" ? "输出质量" : "质量";
+  const updateAdvancedOption = (key: keyof ImageAdvancedOptions, value: string) => {
+    onImageAdvancedOptionsChange({ ...imageAdvancedOptions, [key]: value });
+  };
   const hasComposerContent = imagePrompt.trim().length > 0 || sourceImages.length > 0;
   const previousHasComposerContentRef = useRef(hasComposerContent);
   const [isMobileComposerExpanded, setIsMobileComposerExpanded] = useState(hasComposerContent);
@@ -246,6 +253,48 @@ export function PromptComposer({
                   ))}
                 </SelectContent>
               </Select>
+            ) : null}
+
+            {showImageOutputControls ? (
+              <div className="hide-scrollbar flex shrink-0 items-center gap-1.5 overflow-x-auto rounded-full border border-stone-200 bg-white px-2 py-1 sm:flex-wrap sm:overflow-visible">
+                <span className="shrink-0 text-[12px] font-medium text-stone-600">高级</span>
+                <Input
+                  value={imageAdvancedOptions.inputFidelity ?? ""}
+                  onChange={(event) => updateAdvancedOption("inputFidelity", event.target.value)}
+                  placeholder="fidelity"
+                  className="h-7 w-[76px] border-0 bg-transparent px-1 text-[12px] shadow-none focus-visible:ring-0"
+                />
+                <Input
+                  value={imageAdvancedOptions.outputFormat ?? ""}
+                  onChange={(event) => updateAdvancedOption("outputFormat", event.target.value)}
+                  placeholder="format"
+                  className="h-7 w-[70px] border-0 bg-transparent px-1 text-[12px] shadow-none focus-visible:ring-0"
+                />
+                <Input
+                  value={imageAdvancedOptions.background ?? ""}
+                  onChange={(event) => updateAdvancedOption("background", event.target.value)}
+                  placeholder="bg"
+                  className="h-7 w-[54px] border-0 bg-transparent px-1 text-[12px] shadow-none focus-visible:ring-0"
+                />
+                <Input
+                  value={imageAdvancedOptions.moderation ?? ""}
+                  onChange={(event) => updateAdvancedOption("moderation", event.target.value)}
+                  placeholder="mod"
+                  className="h-7 w-[54px] border-0 bg-transparent px-1 text-[12px] shadow-none focus-visible:ring-0"
+                />
+                <Input
+                  value={imageAdvancedOptions.outputCompression ?? ""}
+                  onChange={(event) => updateAdvancedOption("outputCompression", event.target.value)}
+                  placeholder="comp"
+                  className="h-7 w-[58px] border-0 bg-transparent px-1 text-[12px] shadow-none focus-visible:ring-0"
+                />
+                <Input
+                  value={imageAdvancedOptions.partialImages ?? ""}
+                  onChange={(event) => updateAdvancedOption("partialImages", event.target.value)}
+                  placeholder="partial"
+                  className="h-7 w-[64px] border-0 bg-transparent px-1 text-[12px] shadow-none focus-visible:ring-0"
+                />
+              </div>
             ) : null}
 
             {mode === "generate" && !hasGenerateReferences ? (

@@ -1,6 +1,6 @@
 "use client";
 
-import type { InpaintSourceReference, ImageModel, ImageQuality } from "@/lib/api";
+import type { InpaintSourceReference, ImageAdvancedOptions, ImageModel, ImageQuality } from "@/lib/api";
 import type {
   ImageConversationTurn,
   ImageMode,
@@ -37,6 +37,7 @@ export function createConversationTurn(payload: {
   size?: string;
   quality?: ImageQuality;
   scale?: string;
+  advanced?: ImageAdvancedOptions;
   remoteTaskId?: string;
   sourceImages?: StoredSourceImage[];
   images: StoredImage[];
@@ -54,6 +55,7 @@ export function createConversationTurn(payload: {
     size: payload.size,
     quality: payload.quality,
     scale: payload.scale,
+    advanced: payload.advanced,
     remoteTaskId: payload.remoteTaskId,
     sourceImages: payload.sourceImages ?? [],
     images: payload.images,

@@ -2,7 +2,7 @@
 
 import localforage from "localforage";
 
-import { fetchConfig, type ImageModel, type ImageQuality } from "@/lib/api";
+import { fetchConfig, type ImageAdvancedOptions, type ImageModel, type ImageQuality } from "@/lib/api";
 import webConfig from "@/constants/common-env";
 import { httpRequest } from "@/lib/request";
 
@@ -42,6 +42,7 @@ export type ImageConversationTurn = {
   size?: string;
   quality?: ImageQuality;
   scale?: string;
+  advanced?: ImageAdvancedOptions;
   remoteTaskId?: string;
   sourceImages?: StoredSourceImage[];
   images: StoredImage[];
@@ -60,6 +61,7 @@ export type ImageConversation = {
   size?: string;
   quality?: ImageQuality;
   scale?: string;
+  advanced?: ImageAdvancedOptions;
   sourceImages?: StoredSourceImage[];
   images: StoredImage[];
   createdAt: string;
@@ -290,6 +292,16 @@ function normalizeImageQuality(
     : undefined;
 }
 
+function normalizeImageAdvancedOptions(value: ImageConversationTurn["advanced"]): ImageAdvancedOptions | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const advanced = Object.fromEntries(
+    Object.entries(value).filter(([, item]) => typeof item === "string" && item.trim()),
+  ) as ImageAdvancedOptions;
+  return Object.keys(advanced).length > 0 ? advanced : undefined;
+}
+
 function normalizeImageMode(value: unknown): ImageMode {
   // Keep old local history readable after the deprecated upscale mode was removed.
   return value === "edit" || value === "upscale" ? "edit" : "generate";
@@ -300,6 +312,7 @@ function normalizeTurn(turn: ImageConversationTurn): ImageConversationTurn {
     ...turn,
     mode: normalizeImageMode(turn.mode),
     quality: normalizeImageQuality(turn.quality),
+    advanced: normalizeImageAdvancedOptions(turn.advanced),
     sourceImages: Array.isArray(turn.sourceImages) ? turn.sourceImages : [],
     images: (turn.images || []).map(normalizeStoredImage),
   };
@@ -322,6 +335,7 @@ export function normalizeConversation(
             size: conversation.size,
             quality: conversation.quality,
             scale: conversation.scale,
+            advanced: conversation.advanced,
             sourceImages: conversation.sourceImages,
             images: conversation.images || [],
             createdAt: conversation.createdAt,
@@ -341,6 +355,7 @@ export function normalizeConversation(
     size: latestTurn.size,
     quality: latestTurn.quality,
     scale: latestTurn.scale,
+    advanced: latestTurn.advanced,
     sourceImages: latestTurn.sourceImages,
     images: latestTurn.images,
     createdAt: latestTurn.createdAt,

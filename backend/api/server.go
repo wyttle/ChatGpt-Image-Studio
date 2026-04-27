@@ -973,6 +973,7 @@ func (s *Server) handleImageUpscale(w http.ResponseWriter, r *http.Request) {
 type imageRequestMetadata struct {
 	size         string
 	quality      string
+	requestBody  any
 	promptLength int
 }
 
@@ -982,13 +983,19 @@ func (m imageRequestMetadata) applyTo(entry *imageRequestLogEntry) {
 	}
 	entry.Size = strings.TrimSpace(m.size)
 	entry.Quality = strings.TrimSpace(m.quality)
+	entry.RequestBody = m.requestBody
 	entry.PromptLength = m.promptLength
 }
 
 func newImageRequestMetadata(prompt, size, quality string) imageRequestMetadata {
+	return newImageRequestMetadataWithBody(prompt, size, quality, nil)
+}
+
+func newImageRequestMetadataWithBody(prompt, size, quality string, requestBody any) imageRequestMetadata {
 	return imageRequestMetadata{
 		size:         strings.TrimSpace(size),
 		quality:      strings.TrimSpace(quality),
+		requestBody:  requestBody,
 		promptLength: len([]rune(strings.TrimSpace(prompt))),
 	}
 }
@@ -1146,6 +1153,7 @@ func (s *Server) runPureCPAImageRequest(
 	client := s.newCPAWorkflowClient()
 	upstreamModel := cpaFixedImageModel
 	results, err := run(client, upstreamModel)
+	metadata.requestBody = client.LastSanitizedRequestBody()
 	cpaSubroute := client.LastRoute()
 	if label := strings.TrimSpace(client.LastModelLabel()); label != "" {
 		upstreamModel = label

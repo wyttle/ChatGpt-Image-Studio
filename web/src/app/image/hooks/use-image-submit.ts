@@ -11,6 +11,7 @@ import {
   generateImageWithOptions,
   upscaleImage,
   waitForImageTask,
+  type ImageAdvancedOptions,
   type ImageModel,
   type ImageQuality,
 } from "@/lib/api";
@@ -58,6 +59,7 @@ type UseImageSubmitOptions = {
   parsedCount: number;
   imageSize: string;
   imageQuality: ImageQuality;
+  imageAdvancedOptions: ImageAdvancedOptions;
   selectedConversationId: string | null;
   editorTarget: EditorTarget | null;
   isSubmitting: boolean;
@@ -157,6 +159,7 @@ export function useImageSubmit({
   parsedCount,
   imageSize,
   imageQuality,
+  imageAdvancedOptions,
   selectedConversationId,
   editorTarget,
   isSubmitting,
@@ -190,7 +193,6 @@ export function useImageSubmit({
     const sourceReference = editorTarget.image ? buildInpaintSourceReference(editorTarget.image) : undefined;
     const targetConversationId = editorTarget.conversationId ?? selectedConversationId;
     const conversationId = targetConversationId ?? makeId();
-    const supportsEditableOutputOptions = editorTarget.image === null;
     const turnId = makeId();
     const now = new Date().toISOString();
     const draftTurn = createConversationTurn({
@@ -200,8 +202,9 @@ export function useImageSubmit({
       prompt,
       model: imageModel,
       count: 1,
-      size: supportsEditableOutputOptions ? imageSize : undefined,
-      quality: supportsEditableOutputOptions ? imageQuality : undefined,
+      size: imageSize,
+      quality: imageQuality,
+      advanced: imageAdvancedOptions,
       sourceImages: [
         buildSourceReference({
           id: makeId(),
@@ -270,8 +273,9 @@ export function useImageSubmit({
           images: fallbackImageFile ? [fallbackImageFile] : [],
           mask: mask.file,
           sourceReference,
-          size: supportsEditableOutputOptions ? imageSize : undefined,
-          quality: supportsEditableOutputOptions ? imageQuality : undefined,
+          size: imageSize,
+          quality: imageQuality,
+          advanced: imageAdvancedOptions,
           model: imageModel,
         });
       } catch (error) {
@@ -285,8 +289,9 @@ export function useImageSubmit({
           prompt,
           images: [fallbackImageFile],
           mask: mask.file,
-          size: supportsEditableOutputOptions ? imageSize : undefined,
-          quality: supportsEditableOutputOptions ? imageQuality : undefined,
+          size: imageSize,
+          quality: imageQuality,
+          advanced: imageAdvancedOptions,
           model: imageModel,
         });
       }
@@ -343,6 +348,7 @@ export function useImageSubmit({
     editorTarget,
     focusConversation,
     imageModel,
+    imageAdvancedOptions,
     imageQuality,
     imageSize,
     makeId,
@@ -391,6 +397,7 @@ export function useImageSubmit({
       count: expectedCount,
       size: turn.size,
       quality: turnMode === "edit" || (turnMode === "generate" && turnImageSources.length === 0) ? turnQuality : undefined,
+      advanced: turn.advanced,
       sourceImages: turnSourceImages,
       images: createLoadingImages(expectedCount, turnId),
       createdAt: now,
@@ -430,13 +437,14 @@ export function useImageSubmit({
           const files = await Promise.all(
             turnImageSources.map((item, index) => dataUrlToFile(buildSourceImageUrl(item), item.name || `reference-${index + 1}.png`)),
           );
-          taskId = (await createImageEditTask({ prompt, images: files, size: turn.size, quality: turnQuality, model: turn.model })).task_id;
+          taskId = (await createImageEditTask({ prompt, images: files, size: turn.size, quality: turnQuality, advanced: turn.advanced, model: turn.model })).task_id;
         } else {
           taskId = (await createImageGenerationTask(prompt, {
             model: turn.model,
             count: expectedCount,
             size: turn.size,
             quality: turnQuality,
+            advanced: turn.advanced,
           })).task_id;
         }
       }
@@ -447,7 +455,7 @@ export function useImageSubmit({
         );
         const maskURL = turnMaskSource ? buildSourceImageUrl(turnMaskSource) : "";
         const mask = maskURL ? await dataUrlToFile(maskURL, turnMaskSource?.name || "mask.png") : null;
-        taskId = (await createImageEditTask({ prompt, images: files, mask, size: turn.size, quality: turnQuality, model: turn.model })).task_id;
+        taskId = (await createImageEditTask({ prompt, images: files, mask, size: turn.size, quality: turnQuality, advanced: turn.advanced, model: turn.model })).task_id;
       }
 
       if (!taskId) {
@@ -533,6 +541,7 @@ export function useImageSubmit({
       count: expectedCount,
       size: mode === "generate" || mode === "edit" ? imageSize : undefined,
       quality: mode === "edit" || (mode === "generate" && imageSources.length === 0) ? imageQuality : undefined,
+      advanced: imageAdvancedOptions,
       sourceImages,
       images: createLoadingImages(expectedCount, turnId),
       createdAt: now,
@@ -578,13 +587,14 @@ export function useImageSubmit({
           const files = await Promise.all(
             imageSources.map((item, index) => dataUrlToFile(buildSourceImageUrl(item), item.name || `reference-${index + 1}.png`)),
           );
-          taskId = (await createImageEditTask({ prompt, images: files, size: imageSize, quality: imageQuality, model: imageModel })).task_id;
+          taskId = (await createImageEditTask({ prompt, images: files, size: imageSize, quality: imageQuality, advanced: imageAdvancedOptions, model: imageModel })).task_id;
         } else {
           taskId = (await createImageGenerationTask(prompt, {
             model: imageModel,
             count: parsedCount,
             size: imageSize,
             quality: imageQuality,
+            advanced: imageAdvancedOptions,
           })).task_id;
         }
       }
@@ -595,7 +605,7 @@ export function useImageSubmit({
         );
         const maskURL = maskSource ? buildSourceImageUrl(maskSource) : "";
         const mask = maskURL ? await dataUrlToFile(maskURL, maskSource?.name || "mask.png") : null;
-        taskId = (await createImageEditTask({ prompt, images: files, mask, size: imageSize, quality: imageQuality, model: imageModel })).task_id;
+        taskId = (await createImageEditTask({ prompt, images: files, mask, size: imageSize, quality: imageQuality, advanced: imageAdvancedOptions, model: imageModel })).task_id;
       }
 
       if (mode === "upscale") {

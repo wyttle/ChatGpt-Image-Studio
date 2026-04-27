@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Activity, RefreshCw } from "lucide-react";
+import { Activity, RefreshCw, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -23,9 +23,21 @@ function formatTime(value: string) {
   }).format(date);
 }
 
+function formatRequestBody(value: unknown) {
+  if (!value) {
+    return "";
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 export default function RequestsPage() {
   const [items, setItems] = useState<RequestLogItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedRequest, setSelectedRequest] = useState<RequestLogItem | null>(null);
 
   const loadItems = async () => {
     setIsLoading(true);
@@ -211,6 +223,15 @@ export default function RequestsPage() {
                             {item.error || "—"}
                           </div>
                         </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="mt-3 h-8 rounded-full border-stone-200 bg-white px-3 text-xs text-stone-600 shadow-none"
+                          onClick={() => setSelectedRequest(item)}
+                          disabled={!item.requestBody}
+                        >
+                          查看请求体
+                        </Button>
                       </div>
                     </div>
                   ))}
@@ -233,6 +254,7 @@ export default function RequestsPage() {
                         <th className="px-4 py-3 whitespace-nowrap">账号</th>
                         <th className="px-4 py-3 whitespace-nowrap">模型</th>
                         <th className="px-4 py-3 whitespace-nowrap">结果</th>
+                        <th className="px-4 py-3 whitespace-nowrap">请求体</th>
                         <th className="px-4 py-3">错误</th>
                       </tr>
                     </thead>
@@ -337,6 +359,17 @@ export default function RequestsPage() {
                               {item.success ? "成功" : "失败"}
                             </Badge>
                           </td>
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-8 rounded-full border-stone-200 bg-white px-3 text-xs text-stone-600 shadow-none"
+                              onClick={() => setSelectedRequest(item)}
+                              disabled={!item.requestBody}
+                            >
+                              查看
+                            </Button>
+                          </td>
                           <td className="px-4 py-3">
                             <div
                               className="max-w-[320px] truncate text-xs text-stone-500"
@@ -368,6 +401,32 @@ export default function RequestsPage() {
                 ) : null}
               </CardContent>
             </Card>
+
+            {selectedRequest ? (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/45 px-4 py-6 backdrop-blur-sm">
+                <div className="flex max-h-full w-full max-w-4xl flex-col rounded-3xl border border-stone-200 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.25)]">
+                  <div className="flex items-center justify-between gap-4 border-b border-stone-100 px-5 py-4">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-stone-900">实际请求体</div>
+                      <div className="mt-1 truncate text-xs text-stone-500">
+                        {selectedRequest.endpoint || "—"} · {formatTime(selectedRequest.startedAt)}
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="size-9 shrink-0 rounded-full p-0 text-stone-500"
+                      onClick={() => setSelectedRequest(null)}
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  </div>
+                  <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words p-5 text-xs leading-6 text-stone-700">
+                    {formatRequestBody(selectedRequest.requestBody) || "该记录没有请求体"}
+                  </pre>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

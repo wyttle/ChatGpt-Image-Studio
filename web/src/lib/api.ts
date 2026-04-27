@@ -11,6 +11,15 @@ export type SyncSource = "cpa" | "newapi" | "sub2api";
 export type AccountSourceKind = "auth_file" | "token";
 export type ImageModel = "gpt-image-1" | "gpt-image-2";
 export type ImageQuality = "low" | "medium" | "high";
+
+export type ImageAdvancedOptions = {
+  background?: string;
+  outputFormat?: string;
+  inputFidelity?: string;
+  moderation?: string;
+  outputCompression?: string;
+  partialImages?: string;
+};
 export type ImageResponseItem = {
   url?: string;
   b64_json?: string;
@@ -305,6 +314,7 @@ export type RequestLogItem = {
   size?: string;
   quality?: string;
   promptLength?: number;
+  requestBody?: unknown;
   preferred: boolean;
   success: boolean;
   error?: string;
@@ -569,6 +579,44 @@ async function submitImageTask(path: string, body: unknown) {
   return waitForImageTask(task.task_id);
 }
 
+function appendImageAdvancedOptions(formData: FormData, advanced?: ImageAdvancedOptions) {
+  if (!advanced) {
+    return;
+  }
+  const fields: Array<[keyof ImageAdvancedOptions, string]> = [
+    ["background", "background"],
+    ["outputFormat", "output_format"],
+    ["inputFidelity", "input_fidelity"],
+    ["moderation", "moderation"],
+    ["outputCompression", "output_compression"],
+    ["partialImages", "partial_images"],
+  ];
+  fields.forEach(([key, field]) => {
+    const value = advanced[key]?.trim();
+    if (value) {
+      formData.append(field, value);
+    }
+  });
+}
+
+function buildImageAdvancedBody(advanced?: ImageAdvancedOptions) {
+  if (!advanced) {
+    return {};
+  }
+  return {
+    background: advanced.background?.trim() || undefined,
+    output_format: advanced.outputFormat?.trim() || undefined,
+    input_fidelity: advanced.inputFidelity?.trim() || undefined,
+    moderation: advanced.moderation?.trim() || undefined,
+    output_compression: advanced.outputCompression?.trim()
+      ? Number(advanced.outputCompression.trim())
+      : undefined,
+    partial_images: advanced.partialImages?.trim()
+      ? Number(advanced.partialImages.trim())
+      : undefined,
+  };
+}
+
 export async function createImageGenerationTask(
   prompt: string,
   options: {
@@ -576,9 +624,10 @@ export async function createImageGenerationTask(
     count?: number;
     size?: string;
     quality?: ImageQuality;
+    advanced?: ImageAdvancedOptions;
   } = {},
 ) {
-  const { model = "gpt-image-2", count = 1, size, quality = "high" } = options;
+  const { model = "gpt-image-2", count = 1, size, quality = "high", advanced } = options;
   return httpRequest<ImageTaskCreateResponse>("/v1/images/generations", {
     method: "POST",
     body: {
@@ -588,6 +637,7 @@ export async function createImageGenerationTask(
       size: size?.trim() || undefined,
       quality,
       response_format: "b64_json",
+      ...buildImageAdvancedBody(advanced),
     },
     headers: { "X-Image-Task": "async" },
   });
@@ -608,9 +658,10 @@ export async function generateImageWithOptions(
     count?: number;
     size?: string;
     quality?: ImageQuality;
+    advanced?: ImageAdvancedOptions;
   } = {},
 ) {
-  const { model = "gpt-image-2", count = 1, size, quality = "high" } = options;
+  const { model = "gpt-image-2", count = 1, size, quality = "high", advanced } = options;
   return submitImageTask("/v1/images/generations", {
     prompt,
     model,
@@ -618,6 +669,7 @@ export async function generateImageWithOptions(
     size: size?.trim() || undefined,
     quality,
     response_format: "b64_json",
+    ...buildImageAdvancedBody(advanced),
   });
 }
 
@@ -628,6 +680,7 @@ export async function createImageEditTask({
   sourceReference,
   size,
   quality,
+  advanced,
   model = "gpt-image-2",
 }: {
   prompt: string;
@@ -636,6 +689,7 @@ export async function createImageEditTask({
   sourceReference?: InpaintSourceReference;
   size?: string;
   quality?: ImageQuality;
+  advanced?: ImageAdvancedOptions;
   model?: ImageModel;
 }) {
   const formData = new FormData();
@@ -648,6 +702,7 @@ export async function createImageEditTask({
   if (quality) {
     formData.append("quality", quality);
   }
+  appendImageAdvancedOptions(formData, advanced);
   images.forEach((file) => formData.append("image", file));
   if (mask) {
     formData.append("mask", mask);
@@ -677,6 +732,7 @@ export async function editImage({
   sourceReference,
   size,
   quality,
+  advanced,
   model = "gpt-image-2",
 }: {
   prompt: string;
@@ -685,6 +741,7 @@ export async function editImage({
   sourceReference?: InpaintSourceReference;
   size?: string;
   quality?: ImageQuality;
+  advanced?: ImageAdvancedOptions;
   model?: ImageModel;
 }) {
   const formData = new FormData();
@@ -697,6 +754,7 @@ export async function editImage({
   if (quality) {
     formData.append("quality", quality);
   }
+  appendImageAdvancedOptions(formData, advanced);
   images.forEach((file) => formData.append("image", file));
   if (mask) {
     formData.append("mask", mask);

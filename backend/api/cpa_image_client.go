@@ -22,9 +22,10 @@ type cpaImageClient struct {
 	apiKey        string
 	httpClient    *http.Client
 	routeStrategy string
-	lastRoute     string
-	lastModel     string
-	lastToolModel string
+	lastRoute                string
+	lastModel                string
+	lastToolModel            string
+	lastSanitizedRequestBody any
 }
 
 const maxCPAResponsesSSELineBytes = 128 << 20
@@ -55,6 +56,13 @@ func (c *cpaImageClient) LastModelLabel() string {
 		return ""
 	}
 	return strings.TrimSpace(c.lastModel)
+}
+
+func (c *cpaImageClient) LastSanitizedRequestBody() any {
+	if c == nil {
+		return nil
+	}
+	return c.lastSanitizedRequestBody
 }
 
 func (c *cpaImageClient) ImageToolModel() string {
@@ -111,6 +119,26 @@ func (c *cpaImageClient) DownloadAsBase64(ctx context.Context, url string) (stri
 	return base64.StdEncoding.EncodeToString(data), nil
 }
 
+func sanitizedCPADataURL(data []byte) string {
+	mime := detectCPAImageMIME(data)
+	if strings.TrimSpace(mime) == "" {
+		mime = "image/png"
+	}
+	return "data:" + mime + ";base64,<omitted>"
+}
+
+func sanitizedCPAImages(images [][]byte) []map[string]any {
+	out := make([]map[string]any, 0, len(images))
+	for index, image := range images {
+		out = append(out, map[string]any{
+			"field": fmt.Sprintf("image-%d", index+1),
+			"size":  len(image),
+			"value": sanitizedCPADataURL(image),
+		})
+	}
+	return out
+}
+
 func (c *cpaImageClient) GenerateImage(ctx context.Context, prompt, model string, n int, size, quality, background string) ([]handler.ImageResult, error) {
 	if c.shouldUseResponsesRoute() {
 		return c.generateViaResponses(ctx, prompt, size, quality, background)
@@ -131,6 +159,7 @@ func (c *cpaImageClient) GenerateImage(ctx context.Context, prompt, model string
 	if strings.TrimSpace(background) != "" {
 		body["background"] = strings.TrimSpace(background)
 	}
+	c.lastSanitizedRequestBody = body
 	c.setLastRoute("images_api")
 	results, err := c.executeJSONRequest(ctx, "/v1/images/generations", body)
 	if err != nil && c.shouldFallbackToResponses(err) {
@@ -149,6 +178,28 @@ func (c *cpaImageClient) EditImageByUpload(ctx context.Context, prompt, model st
 	}
 	if c.shouldUseResponsesRoute() {
 		return c.editViaResponses(ctx, prompt, images, mask, size, quality)
+	}
+
+	fields := map[string]any{
+		"prompt":          strings.TrimSpace(prompt),
+		"model":           strings.TrimSpace(model),
+		"response_format": "b64_json",
+		"image":           sanitizedCPAImages(images),
+	}
+	if strings.TrimSpace(size) != "" {
+		fields["size"] = strings.TrimSpace(size)
+	}
+	if strings.TrimSpace(quality) != "" {
+		fields["quality"] = strings.TrimSpace(quality)
+	}
+	if len(mask) > 0 {
+		fields["mask"] = map[string]any{"size": len(mask), "value": sanitizedCPADataURL(mask)}
+	}
+	c.lastSanitizedRequestBody = map[string]any{
+		"method":       http.MethodPost,
+		"endpoint":     "/v1/images/edits",
+		"content_type": "multipart/form-data",
+		"fields":       fields,
 	}
 
 	var payload bytes.Buffer
@@ -420,11 +471,13 @@ func (c *cpaImageClient) shouldFallbackToResponses(err error) bool {
 
 func (c *cpaImageClient) generateViaResponses(ctx context.Context, prompt, size, quality, background string) ([]handler.ImageResult, error) {
 	payload := c.buildResponsesRequest(prompt, nil, nil, size, quality, background)
+	c.lastSanitizedRequestBody = sanitizeCPAResponsesRequest(payload)
 	return c.executeResponsesRequest(ctx, payload)
 }
 
 func (c *cpaImageClient) editViaResponses(ctx context.Context, prompt string, images [][]byte, mask []byte, size, quality string) ([]handler.ImageResult, error) {
 	payload := c.buildResponsesRequest(prompt, images, mask, size, quality, "")
+	c.lastSanitizedRequestBody = sanitizeCPAResponsesRequest(payload)
 	return c.executeResponsesRequest(ctx, payload)
 }
 
@@ -487,6 +540,50 @@ func (c *cpaImageClient) buildResponsesRequest(prompt string, images [][]byte, m
 		},
 		"tools": []any{tool},
 	}
+}
+
+func sanitizeCPAResponsesRequest(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if key == "image_url" {
+				out[key] = sanitizeCPAImageURLValue(item)
+				continue
+			}
+			out[key] = sanitizeCPAResponsesRequest(item)
+		}
+		return out
+	case []map[string]any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, sanitizeCPAResponsesRequest(item))
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, sanitizeCPAResponsesRequest(item))
+		}
+		return out
+	default:
+		return typed
+	}
+}
+
+func sanitizeCPAImageURLValue(value any) any {
+	text, ok := value.(string)
+	if !ok {
+		return value
+	}
+	if !strings.HasPrefix(strings.ToLower(text), "data:image/") {
+		return text
+	}
+	prefix, _, ok := strings.Cut(text, ",")
+	if !ok {
+		return "data:image/*;base64,<omitted>"
+	}
+	return prefix + ",<omitted>"
 }
 
 func (c *cpaImageClient) executeResponsesRequest(ctx context.Context, body map[string]any) ([]handler.ImageResult, error) {
